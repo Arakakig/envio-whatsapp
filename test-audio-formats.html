@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste de Formatos de Áudio</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .format {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        .supported {
+            background-color: #d4edda;
+            border-color: #c3e6cb;
+        }
+        .not-supported {
+            background-color: #f8d7da;
+            border-color: #f5c6cb;
+        }
+        button {
+            margin: 10px 5px;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .record-btn {
+            background-color: #dc3545;
+            color: white;
+        }
+        .stop-btn {
+            background-color: #6c757d;
+            color: white;
+        }
+        .play-btn {
+            background-color: #28a745;
+            color: white;
+        }
+        audio {
+            width: 100%;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Teste de Formatos de Áudio Suportados</h1>
+    
+    <h2>Formatos Testados:</h2>
+    <div id="formats"></div>
+    
+    <h2>Teste de Gravação:</h2>
+    <div>
+        <button id="recordBtn" class="record-btn">🎤 Gravar</button>
+        <button id="stopBtn" class="stop-btn" disabled>⏹️ Parar</button>
+        <button id="playBtn" class="play-btn" disabled>▶️ Reproduzir</button>
+    </div>
+    
+    <div id="recordingInfo"></div>
+    <audio id="audioPlayer" controls style="display: none;"></audio>
+    
+    <script>
+        const formats = [
+            'audio/ogg;codecs=opus',
+            'audio/webm;codecs=opus',
+            'audio/webm;codecs=vorbis',
+            'audio/mp4',
+            'audio/wav',
+            'audio/aac',
+            'audio/mpeg'
+        ];
+        
+        const formatsDiv = document.getElementById('formats');
+        const recordBtn = document.getElementById('recordBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const playBtn = document.getElementById('playBtn');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const recordingInfo = document.getElementById('recordingInfo');
+        
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let audioBlob = null;
+        
+        // Testar formatos suportados
+        formats.forEach(format => {
+            const isSupported = MediaRecorder.isTypeSupported(format);
+            const div = document.createElement('div');
+            div.className = `format ${isSupported ? 'supported' : 'not-supported'}`;
+            div.innerHTML = `
+                <strong>${format}</strong><br>
+                Status: ${isSupported ? '✅ Suportado' : '❌ Não suportado'}
+            `;
+            formatsDiv.appendChild(div);
+        });
+        
+        // Função de gravação
+        recordBtn.addEventListener('click', async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Encontrar o melhor formato suportado
+                let bestFormat = null;
+                for (const format of formats) {
+                    if (MediaRecorder.isTypeSupported(format)) {
+                        bestFormat = format;
+                        break;
+                    }
+                }
+                
+                if (!bestFormat) {
+                    alert('Nenhum formato de áudio suportado encontrado!');
+                    return;
+                }
+                
+                console.log(`Usando formato: ${bestFormat}`);
+                recordingInfo.innerHTML = `<p>Gravando em: <strong>${bestFormat}</strong></p>`;
+                
+                mediaRecorder = new MediaRecorder(stream, { mimeType: bestFormat });
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = () => {
+                    audioBlob = new Blob(audioChunks, { type: bestFormat });
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    audioPlayer.src = audioUrl;
+                    audioPlayer.style.display = 'block';
+                    
+                    recordingInfo.innerHTML += `
+                        <p>Gravação concluída!</p>
+                        <p>Tamanho: ${(audioBlob.size / 1024).toFixed(2)} KB</p>
+                        <p>Tipo: ${audioBlob.type}</p>
+                    `;
+                    
+                    playBtn.disabled = false;
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                mediaRecorder.start();
+                recordBtn.disabled = true;
+                stopBtn.disabled = false;
+                
+            } catch (error) {
+                console.error('Erro ao iniciar gravação:', error);
+                alert('Erro ao acessar microfone: ' + error.message);
+            }
+        });
+        
+        stopBtn.addEventListener('click', () => {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                recordBtn.disabled = false;
+                stopBtn.disabled = true;
+            }
+        });
+        
+        playBtn.addEventListener('click', () => {
+            if (audioPlayer.src) {
+                audioPlayer.play();
+            }
+        });
+    </script>
+</body>
+</html> 

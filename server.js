@@ -7,9 +7,39 @@ import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import { 
+  initDatabase, 
+  createOrUpdateCustomer, 
+  getActiveConversation, 
+  createConversation, 
+  saveMessage, 
+  getConversationMessages,
+  getDashboardStats,
+  getRecentConversations,
+  getCustomerHistory,
+  markConversationAsSeen,
+  saveWhatsAppSession,
+  updateSessionStatus,
+  getAllSessions,
+  getSessionById,
+  deleteSession
+} from './database.js';
 
 const app = express();
 const PORT = 3001;
+
+// Criar servidor HTTP
+const httpServer = createServer(app);
+
+// Configurar Socket.IO
+const io = new Server(httpServer, {
+  cors: {
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST"]
+  }
+});
 
 // Configuração do __dirname para ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -32,10 +62,10 @@ const upload = multer({
     fileSize: 5 * 1024 * 1024 // 5MB
   },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
+    if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('audio/')) {
       cb(null, true);
     } else {
-      cb(new Error('Apenas imagens são permitidas'), false);
+      cb(new Error('Apenas imagens e áudios são permitidos'), false);
     }
   }
 });
@@ -51,6 +81,32 @@ app.use(express.json());
 app.use(express.static('public'));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// Middleware de tratamento de erro global
+app.use((error, req, res, next) => {
+  console.error('Erro global:', error);
+  
+  // Se for erro do multer
+  if (error.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({
+      success: false,
+      error: 'Arquivo muito grande. Tamanho máximo: 5MB'
+    });
+  }
+  
+  if (error.message && error.message.includes('Apenas imagens e áudios são permitidos')) {
+    return res.status(400).json({
+      success: false,
+      error: error.message
+    });
+  }
+  
+  // Outros erros
+  res.status(500).json({
+    success: false,
+    error: error.message || 'Erro interno do servidor'
+  });
+});
+
 // Variáveis globais para múltiplas sessões do WhatsApp
 let sessions = new Map(); // Map para armazenar múltiplas sessões
 let currentSessionId = null; // Sessão ativa atual
@@ -58,7 +114,11 @@ let currentSessionId = null; // Sessão ativa atual
 // Criar nova sessão do WhatsApp
 const createWhatsAppSession = async (sessionId, sessionName) => {
   try {
-    console.log(`Criando nova sessão: ${sessionId} - ${sessionName}`);
+    console.log(`[${new Date().toLocaleTimeString()}] INFO: Criando nova sessão: ${sessionName}`);
+    
+    // Salvar sessão no banco de dados
+    await saveWhatsAppSession(sessionId, sessionName);
+    await updateSessionStatus(sessionId, 'connecting');
     
     const client = new Client({
       authStrategy: new LocalAuth({ 
@@ -91,28 +151,101 @@ const createWhatsAppSession = async (sessionId, sessionName) => {
     client.on('qr', async (qr) => {
       try {
         session.qrCode = await qrcode.toDataURL(qr);
-        console.log(`QR Code gerado para sessão: ${sessionName}`);
+        console.log(`[${new Date().toLocaleTimeString()}] INFO: QR Code gerado para sessão: ${sessionName}`);
       } catch (err) {
-        console.error(`Erro ao gerar QR Code para sessão ${sessionName}:`, err);
+        console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao gerar QR Code para sessão ${sessionName}:`, err.message);
       }
     });
 
-    client.on('ready', () => {
+    client.on('ready', async () => {
       session.isConnected = true;
       session.qrCode = null;
       session.isInitializing = false;
-      console.log(`WhatsApp conectado na sessão: ${sessionName}`);
+      await updateSessionStatus(sessionId, 'connected');
+      console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: WhatsApp conectado na sessão: ${sessionName}`);
     });
 
-    client.on('disconnected', () => {
+    client.on('disconnected', async () => {
       session.isConnected = false;
       session.isInitializing = false;
-      console.log(`WhatsApp desconectado na sessão: ${sessionName}`);
+      await updateSessionStatus(sessionId, 'disconnected');
+      console.log(`[${new Date().toLocaleTimeString()}] WARNING: WhatsApp desconectado na sessão: ${sessionName}`);
+      
+      // Tentar reconexão automática após 5 segundos
+      setTimeout(async () => {
+        try {
+          console.log(`[${new Date().toLocaleTimeString()}] INFO: Tentando reconexão automática para sessão: ${sessionName}`);
+          session.isInitializing = true;
+          await updateSessionStatus(sessionId, 'connecting');
+          
+          // Tentar reinicializar o cliente
+          await client.initialize();
+          
+          console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Reconexão automática bem-sucedida para sessão: ${sessionName}`);
+        } catch (reconnectError) {
+          console.error(`[${new Date().toLocaleTimeString()}] ERROR: Falha na reconexão automática para sessão ${sessionName}:`, reconnectError.message);
+          session.isInitializing = false;
+          await updateSessionStatus(sessionId, 'disconnected');
+          
+          // Tentar novamente após 30 segundos
+          setTimeout(async () => {
+            try {
+              console.log(`[${new Date().toLocaleTimeString()}] INFO: Segunda tentativa de reconexão para sessão: ${sessionName}`);
+              session.isInitializing = true;
+              await updateSessionStatus(sessionId, 'connecting');
+              
+              await client.initialize();
+              
+              console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Segunda reconexão automática bem-sucedida para sessão: ${sessionName}`);
+            } catch (secondReconnectError) {
+              console.error(`[${new Date().toLocaleTimeString()}] ERROR: Falha na segunda reconexão para sessão ${sessionName}:`, secondReconnectError.message);
+              session.isInitializing = false;
+              await updateSessionStatus(sessionId, 'disconnected');
+            }
+          }, 30000); // 30 segundos
+        }
+      }, 5000); // 5 segundos
     });
 
-    client.on('auth_failure', () => {
+    client.on('auth_failure', async () => {
       session.isInitializing = false;
-      console.log(`Falha na autenticação do WhatsApp na sessão: ${sessionName}`);
+      await updateSessionStatus(sessionId, 'disconnected');
+      console.error(`[${new Date().toLocaleTimeString()}] ERROR: Falha na autenticação do WhatsApp na sessão: ${sessionName}`);
+    });
+
+    // Evento de mensagem recebida
+    client.on('message', async (message) => {
+      try {
+        const chatId = message.from;
+        const messageText = message.body || '';
+        const isGroup = message.from.endsWith('@g.us');
+        const isStatus = message.from === 'status@broadcast';
+        
+        // Buscar ou criar cliente
+        const customer = await createOrUpdateCustomer(chatId);
+        
+        // Buscar conversa ativa
+        let conversation = await getActiveConversation(customer.id, chatId);
+        if (!conversation) {
+          conversation = await createConversation(customer.id, session.id, chatId);
+        }
+        
+        // Salvar mensagem
+        await saveMessage(conversation.id, customer.id, session.id, 'inbound', messageText, 'text', null, null);
+        
+        // Emitir para o chatwood
+        io.emit('chatwood', {
+          type: 'message',
+          conversationId: conversation.id,
+          message: messageText,
+          from: chatId,
+          timestamp: new Date().toISOString()
+        });
+        
+        console.log(`[${new Date().toLocaleTimeString()}] INFO: Mensagem recebida de ${chatId}: ${messageText}`);
+      } catch (error) {
+        console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao processar mensagem:`, error.message);
+      }
     });
 
     await client.initialize();
@@ -122,10 +255,12 @@ const createWhatsAppSession = async (sessionId, sessionName) => {
     if (!currentSessionId) {
       currentSessionId = sessionId;
     }
+
     
+    console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Sessão criada com sucesso: ${sessionName}`);
     return session;
   } catch (err) {
-    console.error(`Erro ao inicializar sessão ${sessionId}:`, err);
+    console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao inicializar sessão ${sessionName}:`, err.message);
     throw err;
   }
 };
@@ -141,6 +276,32 @@ const getCurrentClient = () => {
   return session ? session.client : null;
 };
 
+// Função para verificar se o cliente está pronto para envio
+function isClientReady(client) {
+  try {
+    if (!client) {
+      console.log('[CLIENT CHECK] Cliente não existe');
+      return false;
+    }
+    if (!client.isConnected) {
+      console.log('[CLIENT CHECK] Cliente não está conectado');
+      return false;
+    }
+    
+    // Verificar se o cliente tem as propriedades necessárias
+    if (!client.sendMessage) {
+      console.log('[CLIENT CHECK] Cliente não tem método sendMessage');
+      return false;
+    }
+    
+    console.log('[CLIENT CHECK] Cliente está pronto para envio');
+    return true;
+  } catch (error) {
+    console.log('[CLIENT CHECK] Erro ao verificar cliente:', error.message);
+    return false;
+  }
+}
+
 // Verificar se há sessão conectada
 const isAnySessionConnected = () => {
   for (const session of sessions.values()) {
@@ -148,6 +309,8 @@ const isAnySessionConnected = () => {
   }
   return false;
 };
+
+// Função para enviar logs para o chatwood (removida para reduzir logs)
 
 // Função para validar e formatar número de telefone
 const validateAndFormatPhone = async (element) => {
@@ -255,20 +418,59 @@ const validateAndFormatPhone = async (element) => {
 // Rotas da API
 
 // Listar todas as sessões
-app.get('/api/sessions', (req, res) => {
-  const sessionsList = Array.from(sessions.values()).map(session => ({
-    id: session.id,
-    name: session.name,
-    isConnected: session.isConnected,
-    isInitializing: session.isInitializing,
-    isCurrent: session.id === currentSessionId
-  }));
-  
-  res.json({
-    sessions: sessionsList,
-    currentSessionId,
-    hasAnyConnected: isAnySessionConnected()
-  });
+app.get('/api/sessions', async (req, res) => {
+  try {
+    // Buscar sessões salvas no banco
+    const savedSessions = await getAllSessions();
+    
+    // Mapear sessões ativas em memória
+    const activeSessions = Array.from(sessions.values()).map(session => ({
+      id: session.id,
+      name: session.name,
+      isConnected: session.isConnected,
+      isInitializing: session.isInitializing,
+      isCurrent: session.id === currentSessionId,
+      isLoaded: true, // Sessão carregada em memória
+      lastConnection: session.lastConnection || null
+    }));
+    
+    // Combinar sessões salvas com ativas
+    const allSessions = savedSessions.map(dbSession => {
+      const activeSession = activeSessions.find(s => s.id === dbSession.session_id);
+      
+      if (activeSession) {
+        // Sessão está carregada em memória
+        return {
+          ...activeSession,
+          savedAt: dbSession.created_at,
+          lastConnection: activeSession.lastConnection || dbSession.last_connection
+        };
+      } else {
+        // Sessão salva mas não carregada
+        return {
+          id: dbSession.session_id,
+          name: dbSession.session_name,
+          isConnected: false,
+          isInitializing: false,
+          isCurrent: false,
+          isLoaded: false, // Sessão salva mas não carregada
+          savedAt: dbSession.created_at,
+          lastConnection: dbSession.last_connection
+        };
+      }
+    });
+    
+    res.json({
+      sessions: allSessions,
+      currentSessionId,
+      hasAnyConnected: isAnySessionConnected(),
+      totalSaved: savedSessions.length,
+      totalLoaded: activeSessions.length
+    });
+  } catch (error) {
+    console.error('Erro ao listar sessões:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Criar nova sessão
@@ -329,29 +531,26 @@ app.delete('/api/sessions/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
     
-    if (!sessions.has(sessionId)) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
+    // Desconectar se estiver ativa
+    if (sessions.has(sessionId)) {
+      const session = sessions.get(sessionId);
+      
+      if (session.client) {
+        await session.client.destroy();
+      }
+      sessions.delete(sessionId);
+      
+      if (currentSessionId === sessionId) {
+        currentSessionId = null;
+      }
     }
     
-    const session = sessions.get(sessionId);
+    // Remover do banco
+    await deleteSession(sessionId);
     
-    // Se for a sessão atual, definir outra como atual
-    if (sessionId === currentSessionId) {
-      const otherSessions = Array.from(sessions.keys()).filter(id => id !== sessionId);
-      currentSessionId = otherSessions.length > 0 ? otherSessions[0] : null;
-    }
-    
-    // Desconectar cliente
-    if (session.client) {
-      await session.client.destroy();
-    }
-    
-    sessions.delete(sessionId);
-    
-    res.json({ 
-      success: true, 
-      message: 'Sessão removida com sucesso',
-      currentSessionId
+    res.json({
+      success: true,
+      message: 'Sessão removida com sucesso'
     });
   } catch (error) {
     console.error('Erro ao remover sessão:', error);
@@ -408,6 +607,7 @@ app.post('/api/send-message', upload.single('image'), async (req, res) => {
         details: validation.invalidNumbers 
       });
     }
+    console.log(phone, message)
 
     const chatId = `55${validation.numberUser}@c.us`;
     
@@ -515,9 +715,11 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
           // Enviar imagem com legenda
           const media = MessageMedia.fromFilePath(req.file.path);
           await currentClient.sendMessage(chatId, media, { caption: messageWithId });
+          console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Mensagem com imagem enviada para ${contact.name}`);
         } else {
           // Enviar apenas texto
           await currentClient.sendMessage(chatId, messageWithId);
+          console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Mensagem enviada para ${contact.name}`);
         }
         
         messagesSent++;
@@ -530,16 +732,18 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
 
         // Timeout aleatório entre mensagens (15-30 segundos)
         const timeoutMs = numberAleatorio(15000, 30000);
-        console.log(`Aguardando ${timeoutMs/1000} segundos antes da próxima mensagem...`);
+        console.log(`[${new Date().toLocaleTimeString()}] INFO: Aguardando ${timeoutMs/1000} segundos antes da próxima mensagem...`);
         await new Promise(resolve => setTimeout(resolve, timeoutMs));
 
         // Pausa prolongada a cada 50 mensagens enviadas (10-15 minutos)
         if (messagesSent % 50 === 0) {
           const pauseMs = numberAleatorio(600000, 900000); // 10-15 minutos
-          console.log(`Pausa prolongada de ${pauseMs/60000} minutos após ${messagesSent} mensagens enviadas...`);
+          console.log(`[${new Date().toLocaleTimeString()}] WARNING: Pausa prolongada de ${pauseMs/60000} minutos após ${messagesSent} mensagens enviadas...`);
           await new Promise(resolve => setTimeout(resolve, pauseMs));
         }
       } catch (error) {
+        console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao enviar mensagem para ${contact.name}:`, error.message);
+        
         results.push({
           phone: contact.phone,
           name: contact.name,
@@ -638,10 +842,676 @@ app.post('/api/validate-numbers', async (req, res) => {
   }
 });
 
-// Iniciar servidor
-app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
-  console.log(`Acesse: http://localhost:${PORT}`);
-  console.log(`API disponível em: http://localhost:${PORT}/api`);
-  console.log(`\nPara criar uma sessão WhatsApp, use: POST /api/sessions`);
-}); 
+// ==================== ROTAS DE TESTE ====================
+
+// Rota de teste para verificar se o servidor está funcionando
+app.get('/api/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Servidor funcionando corretamente',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ==================== ROTAS DE ATENDIMENTO ====================
+
+// Dashboard - Estatísticas
+app.get('/api/attendance/dashboard', async (req, res) => {
+  try {
+    const stats = await getDashboardStats();
+    let recentConversations = await getRecentConversations(50);
+    
+    // Determinar o tipo de chat baseado no customer_phone e chat_id
+    recentConversations = recentConversations.map(conv => {
+      const phone = conv.customer_phone || '';
+      const chatId = conv.chat_id || '';
+      
+      let chatType = 'private';
+      
+      // Identificar grupos
+      if (phone.includes('@g.us') || chatId.includes('@g.us')) {
+        chatType = 'group';
+      }
+      // Identificar canais/newsletters
+      else if (phone.includes('@newsletter') || phone.includes('@broadcast') || phone === 'status@broadcast') {
+        chatType = 'channel';
+      }
+      // Conversas privadas (números individuais)
+      else if (phone.includes('@c.us') || chatId.includes('@c.us') || phone.match(/^\d+$/)) {
+        chatType = 'private';
+      }
+      
+      return {
+        ...conv,
+        chat_type: chatType
+      };
+    });
+    
+    // Buscar fotos de perfil e nomes dos contatos
+    const currentClient = getCurrentClient();
+    if (currentClient && currentClient.isConnected) {
+      const conversationsWithProfile = await Promise.all(recentConversations.map(async (conv) => {
+        try {
+          let profilePicture = null;
+          let contactName = null;
+          
+          // Buscar foto e nome apenas para conversas privadas
+          if (conv.chat_type === 'private') {
+            const chatId = conv.chat_id || `55${conv.customer_phone.replace(/\D/g, '')}@c.us`;
+            
+            try {
+              // Buscar foto de perfil
+              profilePicture = await currentClient.getProfilePicUrl(chatId);
+              
+              // Buscar informações do contato
+              const contact = await currentClient.getContactById(chatId);
+              if (contact && contact.pushname) {
+                contactName = contact.pushname;
+              } else if (contact && contact.name) {
+                contactName = contact.name;
+              }
+              
+            } catch (picError) {
+              // Silenciar erros de foto/nome não encontrados
+              profilePicture = null;
+              contactName = null;
+            }
+          }
+          
+          return {
+            ...conv,
+            profilePicture,
+            contactName
+          };
+        } catch (error) {
+          return {
+            ...conv,
+            profilePicture: null,
+            contactName: null
+          };
+        }
+      }));
+      
+      recentConversations = conversationsWithProfile;
+    }
+    
+    res.json({
+      success: true,
+      stats,
+      recentConversations
+    });
+  } catch (error) {
+    console.error('Erro ao buscar dashboard:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Listar conversas recentes (apenas mensagens individuais)
+app.get('/api/attendance/conversations', async (req, res) => {
+  try {
+    const { limit = 20, status } = req.query;
+    let conversations = await getRecentConversations(parseInt(limit));
+    
+    // Filtrar apenas conversas individuais (remover canais, status, grupos)
+    conversations = conversations.filter(conv => {
+      const phone = conv.customer_phone || '';
+      const chatId = conv.chat_id || '';
+      
+      // Remover canais (@newsletter, @broadcast)
+      if (phone.includes('@newsletter') || phone.includes('@broadcast')) {
+        return false;
+      }
+      
+      // Remover status
+      if (phone === 'status@broadcast') {
+        return false;
+      }
+      
+      // Remover grupos (@g.us)
+      if (phone.includes('@g.us') || chatId.includes('@g.us')) {
+        return false;
+      }
+      
+      // Manter apenas números individuais (@c.us)
+      return phone.includes('@c.us') || chatId.includes('@c.us') || 
+             (phone.match(/^\d+$/) && phone.length >= 8);
+    });
+    
+    console.log('[API] Conversas individuais encontradas:', conversations.length);
+    conversations.forEach((conv, index) => {
+      console.log(`[API] Conversa ${index + 1}:`, {
+        id: conv.id,
+        customer_phone: conv.customer_phone,
+        chat_id: conv.chat_id,
+        status: conv.status,
+        message_count: conv.message_count
+      });
+    });
+    
+    if (status) {
+      conversations = conversations.filter(c => c.status === status);
+    }
+    
+    // Adicionar foto de perfil para cada conversa
+    const conversationsWithProfile = await Promise.all(conversations.map(async (conv) => {
+      try {
+        let profilePicture = null;
+        const currentClient = getCurrentClient();
+        
+        if (currentClient && currentClient.isConnected) {
+          const chatId = conv.chat_id || `55${conv.customer_phone.replace(/\D/g, '')}@c.us`;
+          
+          try {
+            // Buscar foto de perfil
+            profilePicture = await currentClient.getProfilePicUrl(chatId);
+            console.log(`[API] Foto de perfil encontrada para ${chatId}:`, !!profilePicture);
+          } catch (picError) {
+            console.log(`[API] Sem foto de perfil para ${chatId}:`, picError.message);
+            // Sem foto de perfil, usar avatar padrão
+            profilePicture = null;
+          }
+        }
+        
+        return {
+          ...conv,
+          profilePicture
+        };
+      } catch (error) {
+        console.error(`[API] Erro ao buscar foto de perfil para conversa ${conv.id}:`, error.message);
+        return {
+          ...conv,
+          profilePicture: null
+        };
+      }
+    }));
+    
+    res.json({
+      success: true,
+      conversations: conversationsWithProfile
+    });
+  } catch (error) {
+    console.error('Erro ao buscar conversas:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Buscar mensagens de uma conversa
+app.get('/api/attendance/conversations/:conversationId/messages', async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { limit = 50 } = req.query;
+    
+    const messages = await getConversationMessages(parseInt(conversationId), parseInt(limit));
+    
+    res.json({
+      success: true,
+      messages: messages.reverse() // Ordem cronológica
+    });
+  } catch (error) {
+    console.error('Erro ao buscar mensagens:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Marcar conversa como visualizada
+app.post('/api/attendance/conversations/:conversationId/seen', async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    
+    await markConversationAsSeen(parseInt(conversationId));
+    
+    res.json({
+      success: true,
+      message: 'Conversa marcada como visualizada'
+    });
+  } catch (error) {
+    console.error('Erro ao marcar conversa como visualizada:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Buscar histórico de um cliente
+app.get('/api/attendance/customers/:phone/history', async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const { limit = 100 } = req.query;
+    
+    const customer = await getCustomerByPhone(phone);
+    if (!customer) {
+      return res.status(404).json({ error: 'Cliente não encontrado' });
+    }
+    
+    const history = await getCustomerHistory(customer.id, parseInt(limit));
+    
+    res.json({
+      success: true,
+      customer,
+      history
+    });
+  } catch (error) {
+    console.error('Erro ao buscar histórico:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// APIs para gerenciar sessões persistentes
+app.get('/api/sessions', async (req, res) => {
+  try {
+    const sessions = await getAllSessions();
+    
+    // Adicionar status atual das sessões em memória
+    const sessionsWithStatus = sessions.map(dbSession => {
+      const memorySession = sessions.get(dbSession.session_id);
+      return {
+        ...dbSession,
+        isConnected: memorySession?.isConnected || false,
+        isInitializing: memorySession?.isInitializing || false,
+        qrCode: memorySession?.qrCode || null
+      };
+    });
+    
+    res.json({
+      success: true,
+      sessions: sessionsWithStatus
+    });
+  } catch (error) {
+    console.error('Erro ao buscar sessões:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/sessions/:sessionId/load', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    // Verificar se a sessão existe no banco
+    const dbSession = await getSessionById(sessionId);
+    if (!dbSession) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+    
+    // Verificar se já está carregada em memória
+    if (sessions.has(sessionId)) {
+      const existingSession = sessions.get(sessionId);
+      if (existingSession.isConnected) {
+        currentSessionId = sessionId;
+        return res.json({
+          success: true,
+          message: 'Sessão já está conectada e ativa',
+          session: {
+            id: sessionId,
+            name: dbSession.session_name,
+            isConnected: true
+          }
+        });
+      }
+    }
+    
+    // Carregar sessão existente
+    await createWhatsAppSession(sessionId, dbSession.session_name);
+    currentSessionId = sessionId;
+    
+    console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Sessão carregada: ${dbSession.session_name}`);
+    
+    res.json({
+      success: true,
+      message: 'Sessão carregada com sucesso',
+      session: {
+        id: sessionId,
+        name: dbSession.session_name
+      }
+    });
+  } catch (error) {
+    console.error('Erro ao carregar sessão:', error);
+    console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao carregar sessão: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/sessions/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    // Desconectar se estiver ativa
+    if (sessions.has(sessionId)) {
+      const session = sessions.get(sessionId);
+      
+      // Limpar intervalo de verificação de conexão
+      if (session.connectionCheckInterval) {
+        clearInterval(session.connectionCheckInterval);
+        console.log(`[${new Date().toLocaleTimeString()}] INFO: Intervalo de verificação de conexão limpo para sessão: ${session.name}`);
+      }
+      
+      if (session.client) {
+        await session.client.destroy();
+      }
+      sessions.delete(sessionId);
+      
+      if (currentSessionId === sessionId) {
+        currentSessionId = null;
+      }
+    }
+    
+    // Remover do banco
+    await deleteSession(sessionId);
+    
+    res.json({
+      success: true,
+      message: 'Sessão removida com sucesso'
+    });
+  } catch (error) {
+    console.error('Erro ao remover sessão:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Enviar mensagem de atendimento
+app.post('/api/attendance/send-message', upload.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'audio', maxCount: 1 }
+]), async (req, res) => {
+  try {
+    const { conversationId, message, customerPhone, chatId } = req.body;
+    
+    const currentClient = getCurrentClient();
+    const currentSession = getCurrentSession();
+    
+    if (!currentClient || !currentSession || !currentSession.isConnected) {
+      return res.status(400).json({ error: 'WhatsApp não está conectado' });
+    }
+    
+    
+    // Buscar ou criar cliente
+    const customer = await createOrUpdateCustomer(customerPhone);
+    
+    // Buscar conversa ativa
+    let conversation = await getActiveConversation(customer.id, chatId);
+    if (!conversation) {
+      conversation = await createConversation(customer.id, currentSession.id, chatId);
+    }
+    
+    // Adicionar ID aleatório à mensagem
+    const randomId = generateRandomId();
+    const messageWithId = `${message}\n\nid: ${randomId}`;
+    
+    // Enviar mensagem via WhatsApp
+    const toChatId = chatId || `55${customerPhone.replace(/\D/g, '')}@c.us`;
+    
+    if (req.files && (req.files.image || req.files.audio)) {
+      let media, mediaType, mediaPath;
+      
+      if (req.files.image) {
+        const imageFile = req.files.image[0];
+        mediaPath = imageFile.path;
+        media = MessageMedia.fromFilePath(mediaPath);
+        mediaType = 'image';
+      } else if (req.files.audio) {
+        const audioFile = req.files.audio[0];
+        mediaPath = audioFile.path;
+        media = MessageMedia.fromFilePath(mediaPath);
+        mediaType = 'audio';
+      }
+      
+      // Tentar enviar com retry melhorado
+      let retryCount = 0;
+      const maxRetries = 3;
+      let sent = false;
+      
+      while (retryCount < maxRetries && !sent) {
+        try {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          await currentClient.sendMessage(toChatId, media, { caption: messageWithId });
+          sent = true;
+        } catch (sendError) {
+          retryCount++;
+          
+          if (retryCount >= maxRetries) {
+            throw new Error(`Falha ao enviar mensagem após ${maxRetries} tentativas: ${sendError.message}`);
+          }
+          
+          const delay = retryCount * 3000;
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+      
+      // Salvar no banco
+      await saveMessage(
+        conversation.id,
+        customer.id,
+        currentSession.id,
+        'outbound',
+        messageWithId,
+        mediaType,
+        mediaPath,
+        randomId
+      );
+      
+      // Limpar arquivo
+      try {
+        fs.unlinkSync(mediaPath);
+      } catch (unlinkError) {
+        console.error('Erro ao deletar arquivo:', unlinkError.message);
+      }
+    } else {
+      // Tentar enviar texto com retry melhorado
+      let retryCount = 0;
+      const maxRetries = 3;
+      let sent = false;
+      
+      while (retryCount < maxRetries && !sent) {
+        try {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          await currentClient.sendMessage(toChatId, messageWithId);
+          sent = true;
+        } catch (sendError) {
+          retryCount++;
+          
+          if (retryCount >= maxRetries) {
+            throw new Error(`Falha ao enviar mensagem após ${maxRetries} tentativas: ${sendError.message}`);
+          }
+          
+          const delay = retryCount * 3000;
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+      
+      // Salvar no banco
+      await saveMessage(
+        conversation.id,
+        customer.id,
+        currentSession.id,
+        'outbound',
+        messageWithId,
+        'text',
+        null,
+        randomId
+      );
+    }
+    
+    // Emitir evento para atualizar interface
+    io.to(`conversation-${conversation.id}`).emit('new-message', {
+      conversationId: conversation.id,
+      direction: 'outbound',
+      content: messageWithId,
+      timestamp: new Date().toISOString()
+    });
+    
+    console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Mensagem de atendimento enviada para ${customer.name || customerPhone}`);
+    
+    res.json({
+      success: true,
+      message: 'Mensagem enviada com sucesso',
+      conversationId: conversation.id
+    });
+  } catch (error) {
+    console.error('Erro ao enviar mensagem de atendimento:', error);
+    
+    // Garantir que sempre retornamos um JSON válido
+    let errorMessage = 'Erro desconhecido ao enviar mensagem';
+    
+    if (error.message) {
+      errorMessage = error.message;
+    } else if (typeof error === 'string') {
+      errorMessage = error;
+    } else if (error.toString) {
+      errorMessage = error.toString();
+    }
+    
+    // Melhorar mensagens de erro específicas
+    if (errorMessage.includes('Evaluation failed')) {
+      errorMessage = 'WhatsApp Web não está respondendo. Verifique a conexão e tente novamente.';
+    } else if (errorMessage.includes('WhatsApp Web não está disponível')) {
+      errorMessage = 'WhatsApp Web foi desconectado. Reconecte e tente novamente.';
+    } else if (errorMessage.includes('Falha ao enviar mensagem após')) {
+      errorMessage = 'Não foi possível enviar a mensagem após várias tentativas. Tente novamente em alguns segundos.';
+    } else if (errorMessage.includes('Target closed')) {
+      errorMessage = 'Conexão com WhatsApp Web foi perdida. Reconecte e tente novamente.';
+    }
+    
+    // Log detalhado para debugging
+    console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao enviar mensagem: ${errorMessage}`);
+    
+    res.status(500).json({ 
+      success: false,
+      error: errorMessage
+    });
+  }
+});
+
+// Chatwood - logs em tempo real
+io.on('connection', (socket) => {
+  console.log(`[${new Date().toLocaleTimeString()}] SYSTEM: Cliente conectado ao chatwood`);
+  
+  socket.on('disconnect', () => {
+    console.log(`[${new Date().toLocaleTimeString()}] SYSTEM: Cliente desconectado do chatwood`);
+  });
+});
+
+// Carregar todas as sessões salvas do banco de dados
+const loadSavedSessions = async () => {
+  try {
+    console.log('[SESSÕES] Carregando sessões salvas do banco de dados...');
+    const savedSessions = await getAllSessions();
+    
+    if (savedSessions.length === 0) {
+      console.log('[SESSÕES] Nenhuma sessão salva encontrada');
+      console.log(`[${new Date().toLocaleTimeString()}] INFO: Nenhuma sessão salva encontrada`);
+      return;
+    }
+    
+    console.log(`[SESSÕES] Encontradas ${savedSessions.length} sessões salvas`);
+    console.log(`[${new Date().toLocaleTimeString()}] INFO: Carregando ${savedSessions.length} sessões salvas`);
+    
+    for (const dbSession of savedSessions) {
+      try {
+        console.log(`[SESSÕES] Carregando sessão: ${dbSession.session_name} (${dbSession.session_id})`);
+        console.log(`[${new Date().toLocaleTimeString()}] INFO: Carregando sessão: ${dbSession.session_name}`);
+        
+        // Criar a sessão em memória
+        await createWhatsAppSession(dbSession.session_id, dbSession.session_name);
+        
+        // Definir como sessão atual se for a primeira
+        if (!currentSessionId) {
+          currentSessionId = dbSession.session_id;
+          console.log(`[SESSÕES] Definindo sessão atual: ${dbSession.session_name}`);
+        }
+        
+        console.log(`[SESSÕES] Sessão carregada com sucesso: ${dbSession.session_name}`);
+        console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Sessão carregada: ${dbSession.session_name}`);
+        
+      } catch (sessionError) {
+        console.error(`[SESSÕES] Erro ao carregar sessão ${dbSession.session_name}:`, sessionError.message);
+        console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao carregar sessão ${dbSession.session_name}: ${sessionError.message}`);
+      }
+    }
+    
+    console.log(`[SESSÕES] Carregamento concluído. ${sessions.size} sessões ativas`);
+    console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Carregamento concluído. ${sessions.size} sessões ativas`);
+    
+  } catch (error) {
+    console.error('[SESSÕES] Erro ao carregar sessões salvas:', error);
+    console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao carregar sessões salvas: ${error.message}`);
+  }
+};
+
+// Inicializar banco de dados e servidor
+const startServer = async () => {
+  try {
+    // Inicializar banco de dados
+    await initDatabase();
+    console.log(`[${new Date().toLocaleTimeString()}] SYSTEM: Banco de dados inicializado com sucesso`);
+    
+    // Carregar sessões salvas
+    await loadSavedSessions();
+    
+    // Iniciar servidor
+    httpServer.listen(PORT, () => {
+      console.log(`[${new Date().toLocaleTimeString()}] SYSTEM: Servidor iniciado na porta ${PORT}`);
+      console.log(`Servidor rodando na porta ${PORT}`);
+      console.log(`Acesse: http://localhost:${PORT}`);
+      console.log(`API disponível em: http://localhost:${PORT}/api`);
+      console.log(`Chatwood ativo em: http://localhost:${PORT}`);
+      console.log(`\nSessões salvas carregadas automaticamente`);
+    });
+  } catch (error) {
+    console.error('Erro ao inicializar servidor:', error);
+    process.exit(1);
+  }
+};
+
+// Reconectar sessão
+app.post('/api/sessions/:sessionId/reconnect', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    if (!sessions.has(sessionId)) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+    
+    const session = sessions.get(sessionId);
+    
+    if (session.isInitializing) {
+      return res.status(400).json({ error: 'Sessão já está tentando conectar' });
+    }
+    
+    console.log(`[${new Date().toLocaleTimeString()}] INFO: Reconexão manual solicitada para sessão: ${session.name}`);
+    
+    // Marcar como inicializando
+    session.isInitializing = true;
+    session.isConnected = false;
+    await updateSessionStatus(sessionId, 'connecting');
+    
+    try {
+      // Tentar reinicializar o cliente
+      await session.client.initialize();
+      
+      console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Reconexão manual bem-sucedida para sessão: ${session.name}`);
+      
+      res.json({
+        success: true,
+        message: 'Sessão reconectada com sucesso',
+        session: {
+          id: sessionId,
+          name: session.name,
+          isConnected: session.isConnected
+        }
+      });
+    } catch (reconnectError) {
+      console.error(`[${new Date().toLocaleTimeString()}] ERROR: Falha na reconexão manual para sessão ${session.name}:`, reconnectError.message);
+      session.isInitializing = false;
+      await updateSessionStatus(sessionId, 'disconnected');
+      
+      res.status(500).json({
+        success: false,
+        error: `Falha na reconexão: ${reconnectError.message}`
+      });
+    }
+  } catch (error) {
+    console.error('Erro ao reconectar sessão:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+startServer(); 

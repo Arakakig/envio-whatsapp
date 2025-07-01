@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { io } from 'socket.io-client';
 import {
   Container,
   Typography,
@@ -38,10 +39,14 @@ import {
   Refresh as RefreshIcon,
   Warning as WarningIcon,
   CheckCircle as CheckCircleIcon,
-  ExpandMore as ExpandMoreIcon
+  ExpandMore as ExpandMoreIcon,
+  Support,
+  Dashboard
 } from '@mui/icons-material';
 import { DataGrid } from '@mui/x-data-grid';
 import Papa from 'papaparse';
+import AttendanceDashboard from './components/AttendanceDashboard';
+import AttendanceChat from './components/AttendanceChat';
 
 // URL da API backend
 const API_BASE_URL = 'http://localhost:3001/api';
@@ -68,14 +73,34 @@ function App() {
   const [showSessionModal, setShowSessionModal] = useState(false);
   const [newSessionName, setNewSessionName] = useState('');
   const [newSessionId, setNewSessionId] = useState('');
+  const [chatwoodLogs, setChatwoodLogs] = useState([]);
+  const [showChatwood, setShowChatwood] = useState(false);
+  const [socket, setSocket] = useState(null);
+  
+  // Estados para atendimento
+  const [currentView, setCurrentView] = useState('bulk'); // 'bulk', 'attendance'
+  const [selectedConversation, setSelectedConversation] = useState(null);
+
+  // Configurar Socket.IO
+  useEffect(() => {
+    const newSocket = io('http://localhost:3001');
+    setSocket(newSocket);
+
+    newSocket.on('chatwood-log', (logEntry) => {
+      setChatwoodLogs(prev => [...prev, logEntry].slice(-100)); // Manter apenas os últimos 100 logs
+    });
+
+    return () => {
+      newSocket.close();
+    };
+  }, []);
 
   // Carregar sessões
   const loadSessions = async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/sessions`);
       const data = await response.json();
-      setSessions(data.sessions);
-      setCurrentSessionId(data.currentSessionId);
+      setSessions(data.sessions || []);
     } catch (err) {
       console.error('Erro ao carregar sessões:', err);
     }
@@ -324,25 +349,65 @@ function App() {
 
   // Remover sessão
   const removeSession = async (sessionId) => {
-    if (!confirm('Tem certeza que deseja remover esta sessão?')) {
-      return;
-    }
-
     try {
       const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}`, {
         method: 'DELETE'
       });
-
-      const data = await response.json();
-
+      
       if (response.ok) {
+        setError('Sessão removida com sucesso');
         await loadSessions();
-        setError('');
       } else {
-        setError(data.error || 'Erro ao remover sessão');
+        const data = await response.json();
+        setError(`Erro ao remover sessão: ${data.error}`);
       }
-    } catch (err) {
-      setError('Erro ao remover sessão: ' + err.message);
+    } catch (error) {
+      setError(`Erro ao remover sessão: ${error.message}`);
+    }
+  };
+
+  const reconnectSession = async (sessionId) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}/reconnect`, {
+        method: 'POST'
+      });
+      
+      const data = await response.json();
+      
+      if (response.ok) {
+        setError('Sessão reconectada com sucesso');
+        await loadSessions();
+      } else {
+        setError(`Erro ao reconectar sessão: ${data.error}`);
+      }
+    } catch (error) {
+      setError(`Erro ao reconectar sessão: ${error.message}`);
+    }
+  };
+
+  // Limpar logs do chatwood
+  const clearChatwoodLogs = () => {
+    setChatwoodLogs([]);
+  };
+
+  // Funções para atendimento
+  const handleSelectConversation = (conversation) => {
+    setSelectedConversation(conversation);
+  };
+
+  const handleBackToDashboard = () => {
+    setSelectedConversation(null);
+  };
+
+  // Obter cor do tipo de log
+  const getLogColor = (type) => {
+    switch (type) {
+      case 'success': return '#4caf50';
+      case 'error': return '#f44336';
+      case 'warning': return '#ff9800';
+      case 'info': return '#2196f3';
+      case 'system': return '#9c27b0';
+      default: return '#757575';
     }
   };
 
@@ -592,10 +657,73 @@ function App() {
 
   return (
     <Container maxWidth="lg" sx={{ py: 4 }}>
-      <Typography variant="h3" component="h1" gutterBottom align="center" color="primary">
-        <WhatsAppIcon sx={{ mr: 2, fontSize: 'inherit' }} />
-        Disparador de WhatsApp
+      <Typography variant="h3" component="h1" gutterBottom align="center" sx={{ mb: 4 }}>
+        📱 Plataforma WhatsApp Omnichannel
       </Typography>
+
+      {/* Navegação */}
+      <Paper sx={{ p: 2, mb: 3 }}>
+        <Box display="flex" gap={2}>
+          <Button
+            variant={currentView === 'bulk' ? 'contained' : 'outlined'}
+            startIcon={<SendIcon />}
+            onClick={() => setCurrentView('bulk')}
+          >
+            Envio em Massa
+          </Button>
+          <Button
+            variant={currentView === 'attendance' ? 'contained' : 'outlined'}
+            startIcon={<Support />}
+            onClick={() => setCurrentView('attendance')}
+          >
+            Atendimento ao Cliente
+          </Button>
+        </Box>
+      </Paper>
+
+      {/* Alertas */}
+      {error && (
+        <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError('')}>
+          {error}
+        </Alert>
+      )}
+
+      {/* Interface de Atendimento */}
+      {currentView === 'attendance' && (
+        <Box height="100vh" display="flex">
+          {/* Coluna da esquerda - Dashboard sempre visível */}
+          <Box width="400px" borderRight="1px solid" borderColor="divider">
+            <AttendanceDashboard 
+              onSelectConversation={handleSelectConversation}
+              selectedConversation={selectedConversation}
+            />
+          </Box>
+
+          {/* Coluna da direita - Chat ou área vazia */}
+          <Box flex={1} display="flex" flexDirection="column">
+            {selectedConversation ? (
+              <AttendanceChat 
+                conversation={selectedConversation}
+                onBack={handleBackToDashboard}
+              />
+            ) : (
+              <Box p={3} display="flex" justifyContent="center" alignItems="center" height="100%">
+                <Typography variant="h6" color="text.secondary" textAlign="center">
+                  Selecione uma conversa na lista à esquerda para começar o atendimento
+                </Typography>
+              </Box>
+            )}
+          </Box>
+        </Box>
+      )}
+
+      {/* Interface de Envio em Massa */}
+      {currentView === 'bulk' && (
+        <Box>
+          <Typography variant="h4" component="h2" gutterBottom align="center" color="primary">
+            <WhatsAppIcon sx={{ mr: 2, fontSize: 'inherit' }} />
+            Disparador de WhatsApp
+          </Typography>
 
       {/* Gerenciamento de Sessões */}
       <Paper sx={{ p: 3, mb: 3 }}>
@@ -614,7 +742,7 @@ function App() {
 
         {sessions.length === 0 ? (
           <Alert severity="info">
-            Nenhuma sessão criada. Clique em "Nova Sessão" para começar.
+            Nenhuma sessão encontrada. Clique em "Nova Sessão" para criar uma.
           </Alert>
         ) : (
           <Grid container spacing={2}>
@@ -633,16 +761,31 @@ function App() {
                       <Typography variant="h6" noWrap>
                         {session.name}
                       </Typography>
-                      <IconButton
-                        size="small"
-                        color="error"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeSession(session.id);
-                        }}
-                      >
-                        <DeleteIcon />
-                      </IconButton>
+                      <Box display="flex" gap={0.5}>
+                        {!session.isConnected && session.isLoaded && (
+                          <IconButton
+                            size="small"
+                            color="primary"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              reconnectSession(session.id);
+                            }}
+                            title="Reconectar"
+                          >
+                            <RefreshIcon />
+                          </IconButton>
+                        )}
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeSession(session.id);
+                          }}
+                        >
+                          <DeleteIcon />
+                        </IconButton>
+                      </Box>
                     </Box>
                     
                     <Typography variant="body2" color="text.secondary" gutterBottom>
@@ -662,6 +805,13 @@ function App() {
                           size="small"
                         />
                       )}
+                      {!session.isLoaded && (
+                        <Chip
+                          label="Salva"
+                          color="warning"
+                          size="small"
+                        />
+                      )}
                     </Box>
                     
                     {session.isInitializing && (
@@ -672,6 +822,14 @@ function App() {
                         </Typography>
                       </Box>
                     )}
+                    
+                    {session.lastConnection && (
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        Última conexão: {new Date(session.lastConnection).toLocaleString('pt-BR')}
+                      </Typography>
+                    )}
+                    
+
                   </CardContent>
                 </Card>
               </Grid>
@@ -709,6 +867,16 @@ function App() {
               size="small"
             >
               Atualizar
+            </Button>
+          </Grid>
+          <Grid item>
+            <Button
+              variant="outlined"
+              color="secondary"
+              onClick={() => setShowChatwood(!showChatwood)}
+              startIcon={<span style={{ fontSize: '1.2em' }}>🪵</span>}
+            >
+              {showChatwood ? 'Ocultar' : 'Mostrar'} Chatwood
             </Button>
           </Grid>
         </Grid>
@@ -1022,6 +1190,94 @@ function App() {
         </Paper>
       )}
 
+      {/* Chatwood - Logs em Tempo Real */}
+      {showChatwood && (
+        <Paper sx={{ p: 3, mb: 3, maxHeight: 400, overflow: 'hidden' }}>
+          <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+            <Typography variant="h5" display="flex" alignItems="center" gap={1}>
+              🪵 Chatwood - Logs em Tempo Real
+            </Typography>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={clearChatwoodLogs}
+            >
+              Limpar Logs
+            </Button>
+          </Box>
+          
+          <Box 
+            sx={{ 
+              height: 300, 
+              overflowY: 'auto', 
+              backgroundColor: '#f5f5f5',
+              borderRadius: 1,
+              p: 2,
+              fontFamily: 'monospace',
+              fontSize: '0.875rem'
+            }}
+          >
+            {chatwoodLogs.length === 0 ? (
+              <Typography variant="body2" color="text.secondary" textAlign="center">
+                Aguardando logs...
+              </Typography>
+            ) : (
+              chatwoodLogs.map((log) => (
+                <Box 
+                  key={log.id} 
+                  sx={{ 
+                    mb: 1, 
+                    p: 1, 
+                    borderRadius: 1,
+                    backgroundColor: 'white',
+                    borderLeft: `4px solid ${getLogColor(log.type)}`
+                  }}
+                >
+                  <Box display="flex" alignItems="center" gap={1}>
+                    <Typography 
+                      variant="caption" 
+                      sx={{ 
+                        color: getLogColor(log.type),
+                        fontWeight: 'bold',
+                        minWidth: 60
+                      }}
+                    >
+                      [{log.timestamp}]
+                    </Typography>
+                    <Typography 
+                      variant="caption" 
+                      sx={{ 
+                        color: getLogColor(log.type),
+                        fontWeight: 'bold',
+                        textTransform: 'uppercase',
+                        minWidth: 80
+                      }}
+                    >
+                      {log.type}
+                    </Typography>
+                    <Typography variant="body2">
+                      {log.message}
+                    </Typography>
+                  </Box>
+                  {log.data && Object.keys(log.data).length > 0 && (
+                    <Typography 
+                      variant="caption" 
+                      sx={{ 
+                        color: 'text.secondary',
+                        ml: 7,
+                        display: 'block'
+                      }}
+                    >
+                      {JSON.stringify(log.data, null, 2)}
+                    </Typography>
+                  )}
+                </Box>
+              ))
+            )}
+          </Box>
+        </Paper>
+      )}
+
       {/* Modal Nova Sessão */}
       <Dialog open={showSessionModal} onClose={() => setShowSessionModal(false)} maxWidth="sm" fullWidth>
         <DialogTitle>
@@ -1095,6 +1351,8 @@ function App() {
           <Button onClick={() => setOpenModal(false)}>Fechar</Button>
         </DialogActions>
       </Dialog>
+        </Box>
+      )}
     </Container>
   );
 }
