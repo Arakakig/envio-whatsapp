@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import pkg from 'whatsapp-web.js';
-const { Client, MessageMedia } = pkg;
+const { Client, MessageMedia, LocalAuth } = pkg;
 import qrcode from 'qrcode';
 import multer from 'multer';
 import path from 'path';
@@ -51,15 +51,20 @@ app.use(express.json());
 app.use(express.static('public'));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Variáveis globais para o cliente WhatsApp
-let client = null;
-let qrCodeData = null;
-let isConnected = false;
+// Variáveis globais para múltiplas sessões do WhatsApp
+let sessions = new Map(); // Map para armazenar múltiplas sessões
+let currentSessionId = null; // Sessão ativa atual
 
-// Inicializar cliente WhatsApp
-const initializeWhatsApp = async () => {
+// Criar nova sessão do WhatsApp
+const createWhatsAppSession = async (sessionId, sessionName) => {
   try {
-    client = new Client({
+    console.log(`Criando nova sessão: ${sessionId} - ${sessionName}`);
+    
+    const client = new Client({
+      authStrategy: new LocalAuth({ 
+        clientId: sessionId,
+        dataPath: `./.wwebjs_auth/${sessionId}`
+      }),
       puppeteer: {
         headless: true,
         args: [
@@ -74,34 +79,74 @@ const initializeWhatsApp = async () => {
       }
     });
 
+    const session = {
+      id: sessionId,
+      name: sessionName,
+      client: client,
+      qrCode: null,
+      isConnected: false,
+      isInitializing: true
+    };
+
     client.on('qr', async (qr) => {
       try {
-        qrCodeData = await qrcode.toDataURL(qr);
-        console.log('QR Code gerado');
+        session.qrCode = await qrcode.toDataURL(qr);
+        console.log(`QR Code gerado para sessão: ${sessionName}`);
       } catch (err) {
-        console.error('Erro ao gerar QR Code:', err);
+        console.error(`Erro ao gerar QR Code para sessão ${sessionName}:`, err);
       }
     });
 
     client.on('ready', () => {
-      isConnected = true;
-      qrCodeData = null;
-      console.log('WhatsApp conectado!');
+      session.isConnected = true;
+      session.qrCode = null;
+      session.isInitializing = false;
+      console.log(`WhatsApp conectado na sessão: ${sessionName}`);
     });
 
     client.on('disconnected', () => {
-      isConnected = false;
-      console.log('WhatsApp desconectado');
+      session.isConnected = false;
+      session.isInitializing = false;
+      console.log(`WhatsApp desconectado na sessão: ${sessionName}`);
     });
 
     client.on('auth_failure', () => {
-      console.log('Falha na autenticação do WhatsApp');
+      session.isInitializing = false;
+      console.log(`Falha na autenticação do WhatsApp na sessão: ${sessionName}`);
     });
 
     await client.initialize();
+    sessions.set(sessionId, session);
+    
+    // Definir como sessão atual se for a primeira
+    if (!currentSessionId) {
+      currentSessionId = sessionId;
+    }
+    
+    return session;
   } catch (err) {
-    console.error('Erro ao inicializar WhatsApp:', err);
+    console.error(`Erro ao inicializar sessão ${sessionId}:`, err);
+    throw err;
   }
+};
+
+// Obter sessão atual
+const getCurrentSession = () => {
+  return sessions.get(currentSessionId);
+};
+
+// Obter cliente atual
+const getCurrentClient = () => {
+  const session = getCurrentSession();
+  return session ? session.client : null;
+};
+
+// Verificar se há sessão conectada
+const isAnySessionConnected = () => {
+  for (const session of sessions.values()) {
+    if (session.isConnected) return true;
+  }
+  return false;
 };
 
 // Função para validar e formatar número de telefone
@@ -166,23 +211,30 @@ const validateAndFormatPhone = async (element) => {
     console.log('Número formatado para WhatsApp:', numeroAux);
 
     //---------------------------------------Verifica se o número é valido no WhatsApp (APENAS se passou por todas as validações)----------------------------------------
-    if (shouldSend && client && isConnected) {
-      try {
-        console.log('Verificando se número está registrado no WhatsApp...');
-        const isTrue = await client.isRegisteredUser(numeroAux);
-        console.log('Resultado da verificação WhatsApp:', isTrue);
-        
-        if (!isTrue) {
-          invalidNumbers.push({ 
-            name: element?.name, 
-            number: phoneNumber, 
-            reason: 'Número não registrado no WhatsApp' 
-          });
-          shouldSend = false;
+    if (shouldSend) {
+      const currentClient = getCurrentClient();
+      const currentSession = getCurrentSession();
+      
+      if (currentClient && currentSession && currentSession.isConnected) {
+        try {
+          console.log('Verificando se número está registrado no WhatsApp...');
+          const isTrue = await currentClient.isRegisteredUser(numeroAux);
+          console.log('Resultado da verificação WhatsApp:', isTrue);
+          
+          if (!isTrue) {
+            invalidNumbers.push({ 
+              name: element?.name, 
+              number: phoneNumber, 
+              reason: 'Número não registrado no WhatsApp' 
+            });
+            shouldSend = false;
+          }
+        } catch (error) {
+          console.error('Erro ao verificar número no WhatsApp:', error);
+          // Se não conseguir verificar, continua com o envio
         }
-      } catch (error) {
-        console.error('Erro ao verificar número no WhatsApp:', error);
-        // Se não conseguir verificar, continua com o envio
+      } else {
+        console.log('Nenhuma sessão WhatsApp conectada para validação');
       }
     }
 
@@ -202,18 +254,130 @@ const validateAndFormatPhone = async (element) => {
 
 // Rotas da API
 
-// Status da conexão
-app.get('/api/status', (req, res) => {
+// Listar todas as sessões
+app.get('/api/sessions', (req, res) => {
+  const sessionsList = Array.from(sessions.values()).map(session => ({
+    id: session.id,
+    name: session.name,
+    isConnected: session.isConnected,
+    isInitializing: session.isInitializing,
+    isCurrent: session.id === currentSessionId
+  }));
+  
   res.json({
-    isConnected,
-    hasQRCode: !!qrCodeData
+    sessions: sessionsList,
+    currentSessionId,
+    hasAnyConnected: isAnySessionConnected()
   });
 });
 
-// Obter QR Code
+// Criar nova sessão
+app.post('/api/sessions', async (req, res) => {
+  try {
+    const { sessionId, sessionName } = req.body;
+    
+    if (!sessionId || !sessionName) {
+      return res.status(400).json({ error: 'ID e nome da sessão são obrigatórios' });
+    }
+    
+    if (sessions.has(sessionId)) {
+      return res.status(400).json({ error: 'Sessão com este ID já existe' });
+    }
+    
+    await createWhatsAppSession(sessionId, sessionName);
+    
+    res.json({ 
+      success: true, 
+      message: 'Sessão criada com sucesso',
+      sessionId,
+      sessionName
+    });
+  } catch (error) {
+    console.error('Erro ao criar sessão:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Alterar sessão atual
+app.post('/api/sessions/current', (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    
+    if (!sessionId) {
+      return res.status(400).json({ error: 'ID da sessão é obrigatório' });
+    }
+    
+    if (!sessions.has(sessionId)) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+    
+    currentSessionId = sessionId;
+    
+    res.json({ 
+      success: true, 
+      message: 'Sessão atual alterada',
+      currentSessionId
+    });
+  } catch (error) {
+    console.error('Erro ao alterar sessão atual:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Remover sessão
+app.delete('/api/sessions/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    if (!sessions.has(sessionId)) {
+      return res.status(404).json({ error: 'Sessão não encontrada' });
+    }
+    
+    const session = sessions.get(sessionId);
+    
+    // Se for a sessão atual, definir outra como atual
+    if (sessionId === currentSessionId) {
+      const otherSessions = Array.from(sessions.keys()).filter(id => id !== sessionId);
+      currentSessionId = otherSessions.length > 0 ? otherSessions[0] : null;
+    }
+    
+    // Desconectar cliente
+    if (session.client) {
+      await session.client.destroy();
+    }
+    
+    sessions.delete(sessionId);
+    
+    res.json({ 
+      success: true, 
+      message: 'Sessão removida com sucesso',
+      currentSessionId
+    });
+  } catch (error) {
+    console.error('Erro ao remover sessão:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Status da conexão atual
+app.get('/api/status', (req, res) => {
+  const currentSession = getCurrentSession();
+  
+  res.json({
+    isConnected: currentSession ? currentSession.isConnected : false,
+    hasQRCode: currentSession ? !!currentSession.qrCode : false,
+    currentSessionId,
+    currentSessionName: currentSession ? currentSession.name : null,
+    hasAnyConnected: isAnySessionConnected()
+  });
+});
+
+// Obter QR Code da sessão atual
 app.get('/api/qr', (req, res) => {
-  if (qrCodeData) {
-    res.json({ qrCode: qrCodeData });
+  const currentSession = getCurrentSession();
+  
+  if (currentSession && currentSession.qrCode) {
+    res.json({ qrCode: currentSession.qrCode });
   } else {
     res.status(404).json({ error: 'QR Code não disponível' });
   }
@@ -224,7 +388,10 @@ app.post('/api/send-message', upload.single('image'), async (req, res) => {
   try {
     const { phone, message } = req.body;
 
-    if (!client || !isConnected) {
+    const currentClient = getCurrentClient();
+    const currentSession = getCurrentSession();
+
+    if (!currentClient || !currentSession || !currentSession.isConnected) {
       return res.status(400).json({ error: 'WhatsApp não está conectado' });
     }
 
@@ -251,16 +418,20 @@ app.post('/api/send-message', upload.single('image'), async (req, res) => {
     if (req.file) {
       // Enviar imagem com legenda
       const media = MessageMedia.fromFilePath(req.file.path);
-      await client.sendMessage(chatId, media, { caption: messageWithId });
+      await currentClient.sendMessage(chatId, media, { caption: messageWithId });
       
       // Limpar arquivo após envio
       fs.unlinkSync(req.file.path);
     } else {
       // Enviar apenas texto
-      await client.sendMessage(chatId, messageWithId);
+      await currentClient.sendMessage(chatId, messageWithId);
     }
     
-    res.json({ success: true, message: 'Mensagem enviada com sucesso' });
+    res.json({ 
+      success: true, 
+      message: 'Mensagem enviada com sucesso',
+      sessionName: currentSession.name
+    });
   } catch (error) {
     console.error('Erro ao enviar mensagem:', error);
     res.status(500).json({ error: error.message });
@@ -283,7 +454,10 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
     const contacts = JSON.parse(req.body.contacts);
     const message = req.body.message;
 
-    if (!client || !isConnected) {
+    const currentClient = getCurrentClient();
+    const currentSession = getCurrentSession();
+
+    if (!currentClient || !currentSession || !currentSession.isConnected) {
       return res.status(400).json({ error: 'WhatsApp não está conectado' });
     }
 
@@ -340,10 +514,10 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
         if (req.file) {
           // Enviar imagem com legenda
           const media = MessageMedia.fromFilePath(req.file.path);
-          await client.sendMessage(chatId, media, { caption: messageWithId });
+          await currentClient.sendMessage(chatId, media, { caption: messageWithId });
         } else {
           // Enviar apenas texto
-          await client.sendMessage(chatId, messageWithId);
+          await currentClient.sendMessage(chatId, messageWithId);
         }
         
         messagesSent++;
@@ -464,11 +638,10 @@ app.post('/api/validate-numbers', async (req, res) => {
   }
 });
 
-// Inicializar WhatsApp quando o servidor iniciar
-initializeWhatsApp();
-
 // Iniciar servidor
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
   console.log(`Acesse: http://localhost:${PORT}`);
+  console.log(`API disponível em: http://localhost:${PORT}/api`);
+  console.log(`\nPara criar uma sessão WhatsApp, use: POST /api/sessions`);
 }); 

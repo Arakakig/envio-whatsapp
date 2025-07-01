@@ -63,6 +63,23 @@ function App() {
   const [isValidating, setIsValidating] = useState(false);
   const [selectedImage, setSelectedImage] = useState(null);
   const [imagePreview, setImagePreview] = useState('');
+  const [sessions, setSessions] = useState([]);
+  const [currentSessionId, setCurrentSessionId] = useState(null);
+  const [showSessionModal, setShowSessionModal] = useState(false);
+  const [newSessionName, setNewSessionName] = useState('');
+  const [newSessionId, setNewSessionId] = useState('');
+
+  // Carregar sessões
+  const loadSessions = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/sessions`);
+      const data = await response.json();
+      setSessions(data.sessions);
+      setCurrentSessionId(data.currentSessionId);
+    } catch (err) {
+      console.error('Erro ao carregar sessões:', err);
+    }
+  };
 
   // Verificar status da conexão periodicamente
   useEffect(() => {
@@ -71,6 +88,7 @@ function App() {
         const response = await fetch(`${API_BASE_URL}/status`);
         const data = await response.json();
         setIsConnected(data.isConnected);
+        setCurrentSessionId(data.currentSessionId);
         
         if (data.hasQRCode && !qrCode) {
           fetchQRCode();
@@ -80,11 +98,15 @@ function App() {
       }
     };
 
-    // Verificar status imediatamente
+    // Carregar sessões e verificar status imediatamente
+    loadSessions();
     checkStatus();
 
     // Verificar a cada 2 segundos
-    const interval = setInterval(checkStatus, 2000);
+    const interval = setInterval(() => {
+      loadSessions();
+      checkStatus();
+    }, 2000);
 
     return () => clearInterval(interval);
   }, [qrCode]);
@@ -239,6 +261,89 @@ function App() {
   // Gerar ID aleatório
   const generateRandomId = () => {
     return Math.floor(Math.random() * 1000) + 1;
+  };
+
+  // Criar nova sessão
+  const createSession = async () => {
+    if (!newSessionId.trim() || !newSessionName.trim()) {
+      setError('ID e nome da sessão são obrigatórios');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/sessions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sessionId: newSessionId.trim(),
+          sessionName: newSessionName.trim()
+        })
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setShowSessionModal(false);
+        setNewSessionId('');
+        setNewSessionName('');
+        setError('');
+        await loadSessions();
+      } else {
+        setError(data.error || 'Erro ao criar sessão');
+      }
+    } catch (err) {
+      setError('Erro ao criar sessão: ' + err.message);
+    }
+  };
+
+  // Alterar sessão atual
+  const changeCurrentSession = async (sessionId) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/sessions/current`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ sessionId })
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setCurrentSessionId(sessionId);
+        setError('');
+      } else {
+        setError(data.error || 'Erro ao alterar sessão');
+      }
+    } catch (err) {
+      setError('Erro ao alterar sessão: ' + err.message);
+    }
+  };
+
+  // Remover sessão
+  const removeSession = async (sessionId) => {
+    if (!confirm('Tem certeza que deseja remover esta sessão?')) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}`, {
+        method: 'DELETE'
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        await loadSessions();
+        setError('');
+      } else {
+        setError(data.error || 'Erro ao remover sessão');
+      }
+    } catch (err) {
+      setError('Erro ao remover sessão: ' + err.message);
+    }
   };
 
   // Enviar mensagem em massa
@@ -492,6 +597,89 @@ function App() {
         Disparador de WhatsApp
       </Typography>
 
+      {/* Gerenciamento de Sessões */}
+      <Paper sx={{ p: 3, mb: 3 }}>
+        <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+          <Typography variant="h5">
+            Sessões WhatsApp
+          </Typography>
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => setShowSessionModal(true)}
+          >
+            Nova Sessão
+          </Button>
+        </Box>
+
+        {sessions.length === 0 ? (
+          <Alert severity="info">
+            Nenhuma sessão criada. Clique em "Nova Sessão" para começar.
+          </Alert>
+        ) : (
+          <Grid container spacing={2}>
+            {sessions.map((session) => (
+              <Grid item xs={12} sm={6} md={4} key={session.id}>
+                <Card 
+                  variant={session.isCurrent ? "elevation" : "outlined"}
+                  sx={{ 
+                    border: session.isCurrent ? '2px solid #1976d2' : '1px solid #ddd',
+                    cursor: 'pointer'
+                  }}
+                  onClick={() => changeCurrentSession(session.id)}
+                >
+                  <CardContent>
+                    <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
+                      <Typography variant="h6" noWrap>
+                        {session.name}
+                      </Typography>
+                      <IconButton
+                        size="small"
+                        color="error"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeSession(session.id);
+                        }}
+                      >
+                        <DeleteIcon />
+                      </IconButton>
+                    </Box>
+                    
+                    <Typography variant="body2" color="text.secondary" gutterBottom>
+                      ID: {session.id}
+                    </Typography>
+                    
+                    <Box display="flex" alignItems="center" gap={1} mb={1}>
+                      <Chip
+                        label={session.isConnected ? 'Conectado' : 'Desconectado'}
+                        color={session.isConnected ? 'success' : 'error'}
+                        size="small"
+                      />
+                      {session.isCurrent && (
+                        <Chip
+                          label="Atual"
+                          color="primary"
+                          size="small"
+                        />
+                      )}
+                    </Box>
+                    
+                    {session.isInitializing && (
+                      <Box display="flex" alignItems="center" gap={1}>
+                        <CircularProgress size={16} />
+                        <Typography variant="caption">
+                          Inicializando...
+                        </Typography>
+                      </Box>
+                    )}
+                  </CardContent>
+                </Card>
+              </Grid>
+            ))}
+          </Grid>
+        )}
+      </Paper>
+
       {/* Status de Conexão */}
       <Paper sx={{ p: 3, mb: 3 }}>
         <Grid container spacing={2} alignItems="center">
@@ -502,7 +690,7 @@ function App() {
               icon={<WhatsAppIcon />}
             />
           </Grid>
-          {!isConnected && (
+          {!isConnected && sessions.length > 0 && (
             <Grid item>
               <Button
                 variant="outlined"
@@ -833,6 +1021,48 @@ function App() {
           </Box>
         </Paper>
       )}
+
+      {/* Modal Nova Sessão */}
+      <Dialog open={showSessionModal} onClose={() => setShowSessionModal(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          <Box display="flex" justifyContent="space-between" alignItems="center">
+            <Typography variant="h6">Nova Sessão WhatsApp</Typography>
+            <IconButton onClick={() => setShowSessionModal(false)}>
+              <CloseIcon />
+            </IconButton>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Box display="flex" flexDirection="column" gap={2} sx={{ mt: 2 }}>
+            <TextField
+              fullWidth
+              label="ID da Sessão"
+              value={newSessionId}
+              onChange={(e) => setNewSessionId(e.target.value)}
+              placeholder="Ex: whatsapp1, empresa, pessoal"
+              helperText="Identificador único para a sessão"
+            />
+            <TextField
+              fullWidth
+              label="Nome da Sessão"
+              value={newSessionName}
+              onChange={(e) => setNewSessionName(e.target.value)}
+              placeholder="Ex: WhatsApp Pessoal, WhatsApp Empresa"
+              helperText="Nome descritivo para identificar a sessão"
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowSessionModal(false)}>Cancelar</Button>
+          <Button 
+            onClick={createSession}
+            variant="contained"
+            disabled={!newSessionId.trim() || !newSessionName.trim()}
+          >
+            Criar Sessão
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Modal QR Code */}
       <Dialog open={openModal} onClose={() => setOpenModal(false)} maxWidth="sm" fullWidth>
