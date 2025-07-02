@@ -52,10 +52,12 @@ import {
   Logout as LogoutIcon,
   AccountCircle as AccountCircleIcon,
   Chat as ChatIcon,
-  Note as NoteIcon
+  Note as NoteIcon,
+  Download as DownloadIcon
 } from '@mui/icons-material';
 import { DataGrid } from '@mui/x-data-grid';
 import Papa from 'papaparse';
+import * as XLSX from 'xlsx';
 import AttendanceDashboard from './components/AttendanceDashboard';
 import AttendanceChat from './components/AttendanceChat';
 import Login from './components/Login';
@@ -475,6 +477,120 @@ function App() {
           testNotification();
         }
       });
+    }
+  };
+
+  // Gerar planilha com resultados do disparo
+  const generateReport = () => {
+    if (!successData) {
+      setError('Nenhum resultado de disparo disponível para gerar relatório');
+      return;
+    }
+
+    try {
+      // Preparar dados para a planilha
+      const reportData = [];
+      
+      // Adicionar cabeçalho
+      reportData.push([
+        'Nome',
+        'Telefone',
+        'Status',
+        'Mensagem Enviada',
+        'Data/Hora do Disparo',
+        'Observações'
+      ]);
+
+      // Adicionar dados dos contatos
+      phoneNumbers.forEach(contact => {
+        const status = sendingStatus[contact.phone] || 'Não enviado';
+        const personalizedMessage = getPersonalizedMessage(contact.name);
+        const timestamp = successData.timestamp;
+        
+        let statusText = '';
+        let observacoes = '';
+        
+        switch (status) {
+          case 'success':
+            statusText = '✅ Enviado com Sucesso';
+            break;
+          case 'error':
+            statusText = '❌ Erro no Envio';
+            observacoes = 'Falha na entrega da mensagem';
+            break;
+          case 'pending':
+            statusText = '⏳ Pendente';
+            observacoes = 'Aguardando processamento';
+            break;
+          default:
+            statusText = '❓ Status Desconhecido';
+            observacoes = 'Status não identificado';
+        }
+
+        reportData.push([
+          contact.name || 'Sem nome',
+          contact.phone,
+          statusText,
+          personalizedMessage,
+          new Date(timestamp).toLocaleString('pt-BR'),
+          observacoes
+        ]);
+      });
+
+      // Criar workbook e worksheet
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet(reportData);
+
+      // Configurar largura das colunas
+      const colWidths = [
+        { wch: 20 }, // Nome
+        { wch: 15 }, // Telefone
+        { wch: 20 }, // Status
+        { wch: 50 }, // Mensagem
+        { wch: 20 }, // Data/Hora
+        { wch: 30 }  // Observações
+      ];
+      ws['!cols'] = colWidths;
+
+      // Adicionar worksheet ao workbook
+      XLSX.utils.book_append_sheet(wb, ws, 'Relatório de Disparo');
+
+      // Adicionar planilha de resumo
+      const summaryData = [
+        ['RESUMO DO DISPARO'],
+        [''],
+        ['Data/Hora do Disparo:', new Date(successData.timestamp).toLocaleString('pt-BR')],
+        ['Total de Contatos:', successData.total],
+        ['Enviados com Sucesso:', successData.successful],
+        ['Falharam:', successData.failed],
+        ['Taxa de Sucesso:', `${((successData.successful / successData.total) * 100).toFixed(1)}%`],
+        [''],
+        ['Mensagem Original:', message],
+        [''],
+        ['Detalhes por Status:'],
+        ['✅ Enviados com Sucesso:', successData.successful],
+        ['❌ Erros:', successData.failed],
+        ['⏳ Pendentes:', Object.values(sendingStatus).filter(s => s === 'pending').length]
+      ];
+
+      const summaryWs = XLSX.utils.aoa_to_sheet(summaryData);
+      summaryWs['!cols'] = [{ wch: 25 }, { wch: 15 }];
+      XLSX.utils.book_append_sheet(wb, summaryWs, 'Resumo');
+
+      // Gerar nome do arquivo com timestamp
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const fileName = `relatorio-disparo-${timestamp}.xlsx`;
+
+      // Fazer download do arquivo
+      XLSX.writeFile(wb, fileName);
+
+      // Notificar sucesso
+      setError(`Relatório gerado com sucesso: ${fileName}`);
+      setTimeout(() => setError(''), 5000);
+
+    } catch (error) {
+      console.error('Erro ao gerar relatório:', error);
+      setError('Erro ao gerar relatório: ' + error.message);
     }
   };
 
@@ -1092,22 +1208,44 @@ function App() {
                 >
                   Concluído em {successData?.timestamp ? new Date(successData.timestamp).toLocaleString('pt-BR') : ''}
                 </Typography>
+                
+                {/* Botão para gerar relatório */}
+                <Box sx={{ mt: 2 }}>
+                  <Button
+                    variant="contained"
+                    startIcon={<DownloadIcon />}
+                    onClick={generateReport}
+                    sx={{
+                      backgroundColor: 'rgba(255,255,255,0.2)',
+                      color: 'white',
+                      border: '1px solid rgba(255,255,255,0.3)',
+                      fontWeight: 'bold',
+                      '&:hover': {
+                        backgroundColor: 'rgba(255,255,255,0.3)'
+                      }
+                    }}
+                  >
+                    📊 Baixar Relatório Excel
+                  </Button>
+                </Box>
               </Box>
               
-              <IconButton
-                onClick={() => {
-                  setShowSuccessMessage(false);
-                  setSuccessData(null);
-                }}
-                sx={{
-                  color: 'white',
-                  '&:hover': {
-                    backgroundColor: 'rgba(255,255,255,0.1)'
-                  }
-                }}
-              >
-                <CloseIcon />
-              </IconButton>
+              <Box display="flex" flexDirection="column" gap={1}>
+                <IconButton
+                  onClick={() => {
+                    setShowSuccessMessage(false);
+                    setSuccessData(null);
+                  }}
+                  sx={{
+                    color: 'white',
+                    '&:hover': {
+                      backgroundColor: 'rgba(255,255,255,0.1)'
+                    }
+                  }}
+                >
+                  <CloseIcon />
+                </IconButton>
+              </Box>
             </Box>
           </Paper>
         </Box>
@@ -1364,9 +1502,93 @@ function App() {
       {/* Resultados de Validação */}
       {validationResults && (
         <Paper sx={{ p: 3, mb: 3 }}>
-          <Typography variant="h6" gutterBottom>
-            Resultados da Validação
-          </Typography>
+          <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+            <Typography variant="h6">
+              Resultados da Validação
+            </Typography>
+            <Button
+              variant="outlined"
+              startIcon={<DownloadIcon />}
+              onClick={() => {
+                // Gerar relatório de validação
+                try {
+                  const reportData = [];
+                  
+                  // Cabeçalho
+                  reportData.push([
+                    'Nome',
+                    'Telefone',
+                    'Status de Validação',
+                    'Observações',
+                    'Data/Hora da Validação'
+                  ]);
+
+                  // Dados dos contatos
+                  phoneNumbers.forEach(contact => {
+                    const validation = validationResults.validationResults.find(
+                      v => v.original.phone === contact.phone
+                    );
+                    
+                    const isValid = validation?.validated.shouldSend;
+                    const statusText = isValid ? '✅ Válido' : '❌ Inválido';
+                    const observacoes = isValid ? 'Pronto para envio' : validation?.validated.reason || 'Número inválido';
+                    
+                    reportData.push([
+                      contact.name || 'Sem nome',
+                      contact.phone,
+                      statusText,
+                      observacoes,
+                      new Date().toLocaleString('pt-BR')
+                    ]);
+                  });
+
+                  // Criar workbook
+                  const wb = XLSX.utils.book_new();
+                  const ws = XLSX.utils.aoa_to_sheet(reportData);
+                  
+                  // Configurar largura das colunas
+                  ws['!cols'] = [
+                    { wch: 20 }, // Nome
+                    { wch: 15 }, // Telefone
+                    { wch: 20 }, // Status
+                    { wch: 40 }, // Observações
+                    { wch: 20 }  // Data/Hora
+                  ];
+
+                  XLSX.utils.book_append_sheet(wb, ws, 'Validação de Contatos');
+
+                  // Adicionar resumo
+                  const summaryData = [
+                    ['RESUMO DA VALIDAÇÃO'],
+                    [''],
+                    ['Data/Hora:', new Date().toLocaleString('pt-BR')],
+                    ['Total de Contatos:', validationResults.summary.total],
+                    ['Válidos:', validationResults.summary.valid],
+                    ['Inválidos:', validationResults.summary.invalid],
+                    ['Taxa de Validade:', `${((validationResults.summary.valid / validationResults.summary.total) * 100).toFixed(1)}%`]
+                  ];
+
+                  const summaryWs = XLSX.utils.aoa_to_sheet(summaryData);
+                  summaryWs['!cols'] = [{ wch: 25 }, { wch: 15 }];
+                  XLSX.utils.book_append_sheet(wb, summaryWs, 'Resumo');
+
+                  // Download
+                  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                  const fileName = `relatorio-validacao-${timestamp}.xlsx`;
+                  XLSX.writeFile(wb, fileName);
+
+                  setError(`Relatório de validação gerado: ${fileName}`);
+                  setTimeout(() => setError(''), 5000);
+
+                } catch (error) {
+                  console.error('Erro ao gerar relatório de validação:', error);
+                  setError('Erro ao gerar relatório de validação: ' + error.message);
+                }
+              }}
+            >
+              📊 Relatório de Validação
+            </Button>
+          </Box>
           <Grid container spacing={2}>
             <Grid item xs={12} sm={4}>
               <Chip
