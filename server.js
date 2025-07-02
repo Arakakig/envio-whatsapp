@@ -9,26 +9,74 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import { 
-  initDatabase, 
-  createOrUpdateCustomer, 
-  getActiveConversation, 
-  createConversation, 
-  saveMessage, 
+import {
+  initDatabase,
+  createOrUpdateCustomer,
+  getActiveConversation,
+  createConversation,
+  saveMessage,
   getConversationMessages,
   getDashboardStats,
   getRecentConversations,
   getCustomerHistory,
   markConversationAsSeen,
+  mergeDuplicateConversations,
   saveWhatsAppSession,
   updateSessionStatus,
   getAllSessions,
   getSessionById,
-  deleteSession
+  deleteSession,
+  createUser,
+  getUserByUsername,
+  getUserById,
+  updateLastLogin,
+  getAllUsers,
+  updateUser,
+  deleteUser,
+  changePassword,
+  usernameExists,
+  emailExists,
+  assignConversationToAgent,
+  unassignConversation,
+  getConversationsByAgent,
+  getUnassignedConversations,
+  getAvailableAgents
 } from './database.js';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
+
+// Configurações JWT
+const JWT_SECRET = process.env.JWT_SECRET || 'sua-chave-secreta-super-segura-2024';
+const JWT_EXPIRES_IN = '24h';
+
+// Middleware de autenticação
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+  if (!token) {
+    return res.status(401).json({ error: 'Token de acesso necessário' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Token inválido ou expirado' });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// Middleware para verificar se é admin
+const requireAdmin = (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Acesso negado. Apenas administradores.' });
+  }
+  next();
+};
 
 // Criar servidor HTTP
 const httpServer = createServer(app);
@@ -56,7 +104,7 @@ const storage = multer.diskStorage({
   }
 });
 
-const upload = multer({ 
+const upload = multer({
   storage: storage,
   limits: {
     fileSize: 5 * 1024 * 1024 // 5MB
@@ -84,7 +132,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // Middleware de tratamento de erro global
 app.use((error, req, res, next) => {
   console.error('Erro global:', error);
-  
+
   // Se for erro do multer
   if (error.code === 'LIMIT_FILE_SIZE') {
     return res.status(400).json({
@@ -92,14 +140,14 @@ app.use((error, req, res, next) => {
       error: 'Arquivo muito grande. Tamanho máximo: 5MB'
     });
   }
-  
+
   if (error.message && error.message.includes('Apenas imagens e áudios são permitidos')) {
     return res.status(400).json({
       success: false,
       error: error.message
     });
   }
-  
+
   // Outros erros
   res.status(500).json({
     success: false,
@@ -115,13 +163,13 @@ let currentSessionId = null; // Sessão ativa atual
 const createWhatsAppSession = async (sessionId, sessionName) => {
   try {
     console.log(`[${new Date().toLocaleTimeString()}] INFO: Criando nova sessão: ${sessionName}`);
-    
+
     // Salvar sessão no banco de dados
     await saveWhatsAppSession(sessionId, sessionName);
     await updateSessionStatus(sessionId, 'connecting');
-    
+
     const client = new Client({
-      authStrategy: new LocalAuth({ 
+      authStrategy: new LocalAuth({
         clientId: sessionId,
         dataPath: `./.wwebjs_auth/${sessionId}`
       }),
@@ -135,7 +183,8 @@ const createWhatsAppSession = async (sessionId, sessionName) => {
           '--no-first-run',
           '--no-zygote',
           '--disable-gpu'
-        ]
+        ],
+        executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
       }
     });
 
@@ -170,32 +219,32 @@ const createWhatsAppSession = async (sessionId, sessionName) => {
       session.isInitializing = false;
       await updateSessionStatus(sessionId, 'disconnected');
       console.log(`[${new Date().toLocaleTimeString()}] WARNING: WhatsApp desconectado na sessão: ${sessionName}`);
-      
+
       // Tentar reconexão automática após 5 segundos
       setTimeout(async () => {
         try {
           console.log(`[${new Date().toLocaleTimeString()}] INFO: Tentando reconexão automática para sessão: ${sessionName}`);
           session.isInitializing = true;
           await updateSessionStatus(sessionId, 'connecting');
-          
+
           // Tentar reinicializar o cliente
           await client.initialize();
-          
+
           console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Reconexão automática bem-sucedida para sessão: ${sessionName}`);
         } catch (reconnectError) {
           console.error(`[${new Date().toLocaleTimeString()}] ERROR: Falha na reconexão automática para sessão ${sessionName}:`, reconnectError.message);
           session.isInitializing = false;
           await updateSessionStatus(sessionId, 'disconnected');
-          
+
           // Tentar novamente após 30 segundos
           setTimeout(async () => {
             try {
               console.log(`[${new Date().toLocaleTimeString()}] INFO: Segunda tentativa de reconexão para sessão: ${sessionName}`);
               session.isInitializing = true;
               await updateSessionStatus(sessionId, 'connecting');
-              
+
               await client.initialize();
-              
+
               console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Segunda reconexão automática bem-sucedida para sessão: ${sessionName}`);
             } catch (secondReconnectError) {
               console.error(`[${new Date().toLocaleTimeString()}] ERROR: Falha na segunda reconexão para sessão ${sessionName}:`, secondReconnectError.message);
@@ -220,28 +269,33 @@ const createWhatsAppSession = async (sessionId, sessionName) => {
         const messageText = message.body || '';
         const isGroup = message.from.endsWith('@g.us');
         const isStatus = message.from === 'status@broadcast';
-        
+
+        // Ignorar mensagens de status
+        if (isStatus) {
+          return;
+        }
+
         // Buscar ou criar cliente
         const customer = await createOrUpdateCustomer(chatId);
-        
+
         // Buscar conversa ativa
         let conversation = await getActiveConversation(customer.id, chatId);
         if (!conversation) {
           conversation = await createConversation(customer.id, session.id, chatId);
         }
-        
+
         // Salvar mensagem
         await saveMessage(conversation.id, customer.id, session.id, 'inbound', messageText, 'text', null, null);
-        
+
         // Emitir para o chatwood
         io.emit('chatwood', {
           type: 'message',
           conversationId: conversation.id,
           message: messageText,
           from: chatId,
-          timestamp: new Date().toISOString()
+          timestamp: new Date(new Date().getTime() - (4 * 60 * 60 * 1000)).toISOString()
         });
-        
+
         console.log(`[${new Date().toLocaleTimeString()}] INFO: Mensagem recebida de ${chatId}: ${messageText}`);
       } catch (error) {
         console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao processar mensagem:`, error.message);
@@ -250,13 +304,13 @@ const createWhatsAppSession = async (sessionId, sessionName) => {
 
     await client.initialize();
     sessions.set(sessionId, session);
-    
+
     // Definir como sessão atual se for a primeira
     if (!currentSessionId) {
       currentSessionId = sessionId;
     }
 
-    
+
     console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Sessão criada com sucesso: ${sessionName}`);
     return session;
   } catch (err) {
@@ -279,25 +333,24 @@ const getCurrentClient = () => {
 // Função para verificar se o cliente está pronto para envio
 function isClientReady(client) {
   try {
-    if (!client) {
-      console.log('[CLIENT CHECK] Cliente não existe');
-      return false;
-    }
-    if (!client.isConnected) {
-      console.log('[CLIENT CHECK] Cliente não está conectado');
-      return false;
-    }
-    
-    // Verificar se o cliente tem as propriedades necessárias
-    if (!client.sendMessage) {
-      console.log('[CLIENT CHECK] Cliente não tem método sendMessage');
-      return false;
-    }
-    
-    console.log('[CLIENT CHECK] Cliente está pronto para envio');
-    return true;
+    const hasClient = !!client;
+    const isConnected = client?.isConnected;
+    const hasPupPage = !!client?.pupPage;
+    const pupPageNotClosed = client?.pupPage && !client.pupPage.isClosed();
+    const hasPupBrowser = !!client?.pupBrowser;
+    const pupBrowserConnected = client?.pupBrowser && client.pupBrowser.isConnected !== false;
+
+    console.log(`[DEBUG] isClientReady detalhes:`);
+    console.log(`[DEBUG] - hasClient: ${hasClient}`);
+    console.log(`[DEBUG] - isConnected: ${isConnected}`);
+    console.log(`[DEBUG] - hasPupPage: ${hasPupPage}`);
+    console.log(`[DEBUG] - pupPageNotClosed: ${pupPageNotClosed}`);
+    console.log(`[DEBUG] - hasPupBrowser: ${hasPupBrowser}`);
+    console.log(`[DEBUG] - pupBrowserConnected: ${pupBrowserConnected}`);
+
+    return hasClient && isConnected && hasPupPage && pupPageNotClosed && hasPupBrowser && pupBrowserConnected;
   } catch (error) {
-    console.log('[CLIENT CHECK] Erro ao verificar cliente:', error.message);
+    console.error('Erro ao verificar prontidão do cliente:', error.message);
     return false;
   }
 }
@@ -320,52 +373,52 @@ const validateAndFormatPhone = async (element) => {
 
   try {
     console.log('Iniciando validação para:', element);
-    
+
     //---------------------------------------Verifica se o número é válido---------------------------------------
     // Verificar se o elemento tem phone ou number
     const phoneNumber = element.phone || element.number;
-    
+
     if (!element || !phoneNumber || phoneNumber === '' || phoneNumber === undefined || phoneNumber === null) {
       console.log('Número inválido:', element);
-      return { 
-        shouldSend: false, 
-        numberUser: '', 
-        invalidNumbers: [{ name: element?.name, number: phoneNumber, reason: 'Número não existe ou é inválido' }] 
+      return {
+        shouldSend: false,
+        numberUser: '',
+        invalidNumbers: [{ name: element?.name, number: phoneNumber, reason: 'Número não existe ou é inválido' }]
       };
     }
 
     //---------------------------------------Remove caracteres especiais e atualiza o ddd------------------------
     numberUser = phoneNumber.replace(/\D/g, '');
     console.log('Número após remoção de caracteres especiais:', numberUser);
-    
+
     if (numberUser.length < 8) {
       shouldSend = false;
-      invalidNumbers.push({ 
-        name: element?.name, 
-        number: phoneNumber, 
-        reason: 'Número muito curto (menos de 8 dígitos)' 
+      invalidNumbers.push({
+        name: element?.name,
+        number: phoneNumber,
+        reason: 'Número muito curto (menos de 8 dígitos)'
       });
     }
-    
+
     //---------------------------------------Se não tiver DDD, adiciona 67----------------------------------------
     if (numberUser.length < 10) {
       numberUser = "67" + numberUser;
       console.log('Adicionado DDD 67:', numberUser);
     }
-    
+
     //---------------------------------------Se tiver o 9 inicial de todos os números, retira----------------------------------------
     if (numberUser.length === 11 && numberUser[2] === '9') {
       numberUser = numberUser.slice(0, 2) + numberUser.slice(3);
       console.log('Removido 9 inicial:', numberUser);
     }
-    
+
     // Verificação adicional para números que começam com 3
     if (numberUser[2] === '3') {
       shouldSend = false;
-      invalidNumbers.push({ 
-        name: element?.name, 
-        number: phoneNumber, 
-        reason: 'Número começa com 3 (inválido)' 
+      invalidNumbers.push({
+        name: element?.name,
+        number: phoneNumber,
+        reason: 'Número começa com 3 (inválido)'
       });
     }
 
@@ -377,18 +430,18 @@ const validateAndFormatPhone = async (element) => {
     if (shouldSend) {
       const currentClient = getCurrentClient();
       const currentSession = getCurrentSession();
-      
+
       if (currentClient && currentSession && currentSession.isConnected) {
         try {
           console.log('Verificando se número está registrado no WhatsApp...');
           const isTrue = await currentClient.isRegisteredUser(numeroAux);
           console.log('Resultado da verificação WhatsApp:', isTrue);
-          
+
           if (!isTrue) {
-            invalidNumbers.push({ 
-              name: element?.name, 
-              number: phoneNumber, 
-              reason: 'Número não registrado no WhatsApp' 
+            invalidNumbers.push({
+              name: element?.name,
+              number: phoneNumber,
+              reason: 'Número não registrado no WhatsApp'
             });
             shouldSend = false;
           }
@@ -407,10 +460,10 @@ const validateAndFormatPhone = async (element) => {
 
   } catch (error) {
     console.error('Erro na validação do número:', error);
-    return { 
-      shouldSend: false, 
-      numberUser: '', 
-      invalidNumbers: [{ name: element?.name, number: element?.phone || element?.number, reason: 'Erro na validação: ' + error.message }] 
+    return {
+      shouldSend: false,
+      numberUser: '',
+      invalidNumbers: [{ name: element?.name, number: element?.phone || element?.number, reason: 'Erro na validação: ' + error.message }]
     };
   }
 };
@@ -422,7 +475,7 @@ app.get('/api/sessions', async (req, res) => {
   try {
     // Buscar sessões salvas no banco
     const savedSessions = await getAllSessions();
-    
+
     // Mapear sessões ativas em memória
     const activeSessions = Array.from(sessions.values()).map(session => ({
       id: session.id,
@@ -433,11 +486,11 @@ app.get('/api/sessions', async (req, res) => {
       isLoaded: true, // Sessão carregada em memória
       lastConnection: session.lastConnection || null
     }));
-    
+
     // Combinar sessões salvas com ativas
     const allSessions = savedSessions.map(dbSession => {
       const activeSession = activeSessions.find(s => s.id === dbSession.session_id);
-      
+
       if (activeSession) {
         // Sessão está carregada em memória
         return {
@@ -459,7 +512,7 @@ app.get('/api/sessions', async (req, res) => {
         };
       }
     });
-    
+
     res.json({
       sessions: allSessions,
       currentSessionId,
@@ -477,19 +530,19 @@ app.get('/api/sessions', async (req, res) => {
 app.post('/api/sessions', async (req, res) => {
   try {
     const { sessionId, sessionName } = req.body;
-    
+
     if (!sessionId || !sessionName) {
       return res.status(400).json({ error: 'ID e nome da sessão são obrigatórios' });
     }
-    
+
     if (sessions.has(sessionId)) {
       return res.status(400).json({ error: 'Sessão com este ID já existe' });
     }
-    
+
     await createWhatsAppSession(sessionId, sessionName);
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       message: 'Sessão criada com sucesso',
       sessionId,
       sessionName
@@ -504,19 +557,19 @@ app.post('/api/sessions', async (req, res) => {
 app.post('/api/sessions/current', (req, res) => {
   try {
     const { sessionId } = req.body;
-    
+
     if (!sessionId) {
       return res.status(400).json({ error: 'ID da sessão é obrigatório' });
     }
-    
+
     if (!sessions.has(sessionId)) {
       return res.status(404).json({ error: 'Sessão não encontrada' });
     }
-    
+
     currentSessionId = sessionId;
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       message: 'Sessão atual alterada',
       currentSessionId
     });
@@ -530,24 +583,24 @@ app.post('/api/sessions/current', (req, res) => {
 app.delete('/api/sessions/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    
+
     // Desconectar se estiver ativa
     if (sessions.has(sessionId)) {
       const session = sessions.get(sessionId);
-      
+
       if (session.client) {
         await session.client.destroy();
       }
       sessions.delete(sessionId);
-      
+
       if (currentSessionId === sessionId) {
         currentSessionId = null;
       }
     }
-    
+
     // Remover do banco
     await deleteSession(sessionId);
-    
+
     res.json({
       success: true,
       message: 'Sessão removida com sucesso'
@@ -561,7 +614,7 @@ app.delete('/api/sessions/:sessionId', async (req, res) => {
 // Status da conexão atual
 app.get('/api/status', (req, res) => {
   const currentSession = getCurrentSession();
-  
+
   res.json({
     isConnected: currentSession ? currentSession.isConnected : false,
     hasQRCode: currentSession ? !!currentSession.qrCode : false,
@@ -574,7 +627,7 @@ app.get('/api/status', (req, res) => {
 // Obter QR Code da sessão atual
 app.get('/api/qr', (req, res) => {
   const currentSession = getCurrentSession();
-  
+
   if (currentSession && currentSession.qrCode) {
     res.json({ qrCode: currentSession.qrCode });
   } else {
@@ -598,37 +651,45 @@ app.post('/api/send-message', upload.single('image'), async (req, res) => {
       return res.status(400).json({ error: 'Telefone e mensagem são obrigatórios' });
     }
 
+
+
     // Validar e formatar o número
     const validation = await validateAndFormatPhone({ phone: phone });
-    
+
     if (!validation.shouldSend) {
-      return res.status(400).json({ 
-        error: 'Número inválido', 
-        details: validation.invalidNumbers 
+      return res.status(400).json({
+        error: 'Número inválido',
+        details: validation.invalidNumbers
       });
     }
     console.log(phone, message)
 
     const chatId = `55${validation.numberUser}@c.us`;
-    
+
     // Adicionar ID aleatório à mensagem
     const randomId = generateRandomId();
     const messageWithId = `${message}\n\nid: ${randomId}`;
-    
+
     if (req.file) {
       // Enviar imagem com legenda
       const media = MessageMedia.fromFilePath(req.file.path);
       await currentClient.sendMessage(chatId, media, { caption: messageWithId });
-      
+
       // Limpar arquivo após envio
-      fs.unlinkSync(req.file.path);
+      if (req.file && req.file.path) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (unlinkError) {
+          console.error('Erro ao deletar arquivo:', unlinkError.message);
+        }
+      }
     } else {
       // Enviar apenas texto
       await currentClient.sendMessage(chatId, messageWithId);
     }
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       message: 'Mensagem enviada com sucesso',
       sessionName: currentSession.name
     });
@@ -678,7 +739,7 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
       try {
         // Validar e formatar o número
         const validation = await validateAndFormatPhone(contact);
-        
+
         if (!validation.shouldSend) {
           invalidNumbers.push(...validation.invalidNumbers);
           results.push({
@@ -706,11 +767,11 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
 
         const chatId = `55${validation.numberUser}@c.us`;
         const personalizedMessage = message.replace(/\{nome_cliente\}/g, contact.name || '');
-        
+
         // Adicionar ID aleatório à mensagem
         const randomId = generateRandomId();
         const messageWithId = `${personalizedMessage}\n\nid: ${randomId}`;
-        
+
         if (req.file) {
           // Enviar imagem com legenda
           const media = MessageMedia.fromFilePath(req.file.path);
@@ -721,9 +782,9 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
           await currentClient.sendMessage(chatId, messageWithId);
           console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Mensagem enviada para ${contact.name}`);
         }
-        
+
         messagesSent++;
-        
+
         results.push({
           phone: contact.phone,
           name: contact.name,
@@ -732,18 +793,18 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
 
         // Timeout aleatório entre mensagens (15-30 segundos)
         const timeoutMs = numberAleatorio(15000, 30000);
-        console.log(`[${new Date().toLocaleTimeString()}] INFO: Aguardando ${timeoutMs/1000} segundos antes da próxima mensagem...`);
+        console.log(`[${new Date().toLocaleTimeString()}] INFO: Aguardando ${timeoutMs / 1000} segundos antes da próxima mensagem...`);
         await new Promise(resolve => setTimeout(resolve, timeoutMs));
 
         // Pausa prolongada a cada 50 mensagens enviadas (10-15 minutos)
         if (messagesSent % 50 === 0) {
           const pauseMs = numberAleatorio(600000, 900000); // 10-15 minutos
-          console.log(`[${new Date().toLocaleTimeString()}] WARNING: Pausa prolongada de ${pauseMs/60000} minutos após ${messagesSent} mensagens enviadas...`);
+          console.log(`[${new Date().toLocaleTimeString()}] WARNING: Pausa prolongada de ${pauseMs / 60000} minutos após ${messagesSent} mensagens enviadas...`);
           await new Promise(resolve => setTimeout(resolve, pauseMs));
         }
       } catch (error) {
         console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao enviar mensagem para ${contact.name}:`, error.message);
-        
+
         results.push({
           phone: contact.phone,
           name: contact.name,
@@ -754,7 +815,7 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
     }
 
     // Limpar arquivo de imagem se existir
-    if (req.file) {
+    if (req.file && req.file.path) {
       try {
         fs.unlinkSync(req.file.path);
       } catch (error) {
@@ -762,8 +823,8 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
       }
     }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       results,
       invalidNumbers,
       total: contacts.length,
@@ -780,7 +841,7 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
 app.post('/api/validate-numbers', async (req, res) => {
   try {
     console.log('Recebida requisição de validação:', req.body);
-    
+
     const { contacts } = req.body;
 
     if (!contacts || !Array.isArray(contacts)) {
@@ -795,10 +856,10 @@ app.post('/api/validate-numbers', async (req, res) => {
 
     for (const contact of contacts) {
       console.log('Validando contato:', contact);
-      
+
       const validation = await validateAndFormatPhone(contact);
       console.log('Resultado da validação:', validation);
-      
+
       // Verificar duplicatas
       if (phoneNumbers.includes(validation.numberUser)) {
         validation.shouldSend = false;
@@ -853,6 +914,21 @@ app.get('/api/test', (req, res) => {
   });
 });
 
+// Rota para unificar conversas duplicadas
+app.post('/api/admin/merge-conversations', async (req, res) => {
+  try {
+    const mergedCount = await mergeDuplicateConversations();
+    res.json({
+      success: true,
+      message: `Unificação concluída. ${mergedCount} grupos de conversas duplicadas foram unificados.`,
+      mergedCount
+    });
+  } catch (error) {
+    console.error('Erro ao unificar conversas:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ==================== ROTAS DE ATENDIMENTO ====================
 
 // Dashboard - Estatísticas
@@ -860,64 +936,54 @@ app.get('/api/attendance/dashboard', async (req, res) => {
   try {
     const stats = await getDashboardStats();
     let recentConversations = await getRecentConversations(50);
-    
+
     // Determinar o tipo de chat baseado no customer_phone e chat_id
     recentConversations = recentConversations.map(conv => {
       const phone = conv.customer_phone || '';
       const chatId = conv.chat_id || '';
-      
+
       let chatType = 'private';
-      
+
       // Identificar grupos
       if (phone.includes('@g.us') || chatId.includes('@g.us')) {
         chatType = 'group';
       }
-      // Identificar canais/newsletters
-      else if (phone.includes('@newsletter') || phone.includes('@broadcast') || phone === 'status@broadcast') {
-        chatType = 'channel';
-      }
+
       // Conversas privadas (números individuais)
       else if (phone.includes('@c.us') || chatId.includes('@c.us') || phone.match(/^\d+$/)) {
         chatType = 'private';
       }
-      
+
       return {
         ...conv,
         chat_type: chatType
       };
     });
-    
+
     // Buscar fotos de perfil e nomes dos contatos
     const currentClient = getCurrentClient();
-    if (currentClient && currentClient.isConnected) {
+    if (currentClient) {
       const conversationsWithProfile = await Promise.all(recentConversations.map(async (conv) => {
         try {
           let profilePicture = null;
           let contactName = null;
-          
           // Buscar foto e nome apenas para conversas privadas
           if (conv.chat_type === 'private') {
-            const chatId = conv.chat_id || `55${conv.customer_phone.replace(/\D/g, '')}@c.us`;
-            
+            const chatId = conv.customer_phone;
+
             try {
-              // Buscar foto de perfil
-              profilePicture = await currentClient.getProfilePicUrl(chatId);
-              
-              // Buscar informações do contato
-              const contact = await currentClient.getContactById(chatId);
-              if (contact && contact.pushname) {
-                contactName = contact.pushname;
-              } else if (contact && contact.name) {
-                contactName = contact.name;
-              }
-              
+              // Usar a nova função para obter informações completas do contato
+              const contactInfo = await getContactInfo(currentClient, chatId);
+              console.log(contactInfo)
+              profilePicture = contactInfo.profilePicture;
+              contactName = contactInfo.contactName;
             } catch (picError) {
               // Silenciar erros de foto/nome não encontrados
               profilePicture = null;
               contactName = null;
             }
           }
-          
+
           return {
             ...conv,
             profilePicture,
@@ -931,10 +997,10 @@ app.get('/api/attendance/dashboard', async (req, res) => {
           };
         }
       }));
-      
+
       recentConversations = conversationsWithProfile;
     }
-    
+
     res.json({
       success: true,
       stats,
@@ -951,32 +1017,27 @@ app.get('/api/attendance/conversations', async (req, res) => {
   try {
     const { limit = 20, status } = req.query;
     let conversations = await getRecentConversations(parseInt(limit));
-    
-    // Filtrar apenas conversas individuais (remover canais, status, grupos)
+
+    // Filtrar apenas conversas individuais (remover status, grupos)
     conversations = conversations.filter(conv => {
       const phone = conv.customer_phone || '';
       const chatId = conv.chat_id || '';
-      
-      // Remover canais (@newsletter, @broadcast)
-      if (phone.includes('@newsletter') || phone.includes('@broadcast')) {
-        return false;
-      }
-      
+
       // Remover status
       if (phone === 'status@broadcast') {
         return false;
       }
-      
+
       // Remover grupos (@g.us)
       if (phone.includes('@g.us') || chatId.includes('@g.us')) {
         return false;
       }
-      
+
       // Manter apenas números individuais (@c.us)
-      return phone.includes('@c.us') || chatId.includes('@c.us') || 
-             (phone.match(/^\d+$/) && phone.length >= 8);
+      return phone.includes('@c.us') || chatId.includes('@c.us') ||
+        (phone.match(/^\d+$/) && phone.length >= 8);
     });
-    
+
     console.log('[API] Conversas individuais encontradas:', conversations.length);
     conversations.forEach((conv, index) => {
       console.log(`[API] Conversa ${index + 1}:`, {
@@ -987,23 +1048,23 @@ app.get('/api/attendance/conversations', async (req, res) => {
         message_count: conv.message_count
       });
     });
-    
+
     if (status) {
       conversations = conversations.filter(c => c.status === status);
     }
-    
+
     // Adicionar foto de perfil para cada conversa
     const conversationsWithProfile = await Promise.all(conversations.map(async (conv) => {
       try {
         let profilePicture = null;
         const currentClient = getCurrentClient();
-        
+
         if (currentClient && currentClient.isConnected) {
           const chatId = conv.chat_id || `55${conv.customer_phone.replace(/\D/g, '')}@c.us`;
-          
+
           try {
-            // Buscar foto de perfil
-            profilePicture = await currentClient.getProfilePicUrl(chatId);
+            // Usar a nova função para obter foto de perfil
+            profilePicture = await getContactProfilePicture(currentClient, chatId);
             console.log(`[API] Foto de perfil encontrada para ${chatId}:`, !!profilePicture);
           } catch (picError) {
             console.log(`[API] Sem foto de perfil para ${chatId}:`, picError.message);
@@ -1011,7 +1072,7 @@ app.get('/api/attendance/conversations', async (req, res) => {
             profilePicture = null;
           }
         }
-        
+
         return {
           ...conv,
           profilePicture
@@ -1024,7 +1085,7 @@ app.get('/api/attendance/conversations', async (req, res) => {
         };
       }
     }));
-    
+
     res.json({
       success: true,
       conversations: conversationsWithProfile
@@ -1040,9 +1101,9 @@ app.get('/api/attendance/conversations/:conversationId/messages', async (req, re
   try {
     const { conversationId } = req.params;
     const { limit = 50 } = req.query;
-    
+
     const messages = await getConversationMessages(parseInt(conversationId), parseInt(limit));
-    
+
     res.json({
       success: true,
       messages: messages.reverse() // Ordem cronológica
@@ -1057,9 +1118,9 @@ app.get('/api/attendance/conversations/:conversationId/messages', async (req, re
 app.post('/api/attendance/conversations/:conversationId/seen', async (req, res) => {
   try {
     const { conversationId } = req.params;
-    
+
     await markConversationAsSeen(parseInt(conversationId));
-    
+
     res.json({
       success: true,
       message: 'Conversa marcada como visualizada'
@@ -1075,14 +1136,14 @@ app.get('/api/attendance/customers/:phone/history', async (req, res) => {
   try {
     const { phone } = req.params;
     const { limit = 100 } = req.query;
-    
+
     const customer = await getCustomerByPhone(phone);
     if (!customer) {
       return res.status(404).json({ error: 'Cliente não encontrado' });
     }
-    
+
     const history = await getCustomerHistory(customer.id, parseInt(limit));
-    
+
     res.json({
       success: true,
       customer,
@@ -1098,7 +1159,7 @@ app.get('/api/attendance/customers/:phone/history', async (req, res) => {
 app.get('/api/sessions', async (req, res) => {
   try {
     const sessions = await getAllSessions();
-    
+
     // Adicionar status atual das sessões em memória
     const sessionsWithStatus = sessions.map(dbSession => {
       const memorySession = sessions.get(dbSession.session_id);
@@ -1109,7 +1170,7 @@ app.get('/api/sessions', async (req, res) => {
         qrCode: memorySession?.qrCode || null
       };
     });
-    
+
     res.json({
       success: true,
       sessions: sessionsWithStatus
@@ -1123,13 +1184,13 @@ app.get('/api/sessions', async (req, res) => {
 app.post('/api/sessions/:sessionId/load', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    
+
     // Verificar se a sessão existe no banco
     const dbSession = await getSessionById(sessionId);
     if (!dbSession) {
       return res.status(404).json({ error: 'Sessão não encontrada' });
     }
-    
+
     // Verificar se já está carregada em memória
     if (sessions.has(sessionId)) {
       const existingSession = sessions.get(sessionId);
@@ -1146,13 +1207,13 @@ app.post('/api/sessions/:sessionId/load', async (req, res) => {
         });
       }
     }
-    
+
     // Carregar sessão existente
     await createWhatsAppSession(sessionId, dbSession.session_name);
     currentSessionId = sessionId;
-    
+
     console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Sessão carregada: ${dbSession.session_name}`);
-    
+
     res.json({
       success: true,
       message: 'Sessão carregada com sucesso',
@@ -1171,30 +1232,30 @@ app.post('/api/sessions/:sessionId/load', async (req, res) => {
 app.delete('/api/sessions/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    
+
     // Desconectar se estiver ativa
     if (sessions.has(sessionId)) {
       const session = sessions.get(sessionId);
-      
+
       // Limpar intervalo de verificação de conexão
       if (session.connectionCheckInterval) {
         clearInterval(session.connectionCheckInterval);
         console.log(`[${new Date().toLocaleTimeString()}] INFO: Intervalo de verificação de conexão limpo para sessão: ${session.name}`);
       }
-      
+
       if (session.client) {
         await session.client.destroy();
       }
       sessions.delete(sessionId);
-      
+
       if (currentSessionId === sessionId) {
         currentSessionId = null;
       }
     }
-    
+
     // Remover do banco
     await deleteSession(sessionId);
-    
+
     res.json({
       success: true,
       message: 'Sessão removida com sucesso'
@@ -1212,69 +1273,51 @@ app.post('/api/attendance/send-message', upload.fields([
 ]), async (req, res) => {
   try {
     const { conversationId, message, customerPhone, chatId } = req.body;
-    
     const currentClient = getCurrentClient();
     const currentSession = getCurrentSession();
-    
+
     if (!currentClient || !currentSession || !currentSession.isConnected) {
+      console.log(`[DEBUG] WhatsApp não está conectado - retornando erro`);
       return res.status(400).json({ error: 'WhatsApp não está conectado' });
     }
-    
-    
+
+
+
     // Buscar ou criar cliente
-    const customer = await createOrUpdateCustomer(customerPhone);
-    
-    // Buscar conversa ativa
-    let conversation = await getActiveConversation(customer.id, chatId);
+    let customer = await createOrUpdateCustomer(customerPhone);
+    let conversation = await getActiveConversation(customer.id, currentSession.id);
+
     if (!conversation) {
-      conversation = await createConversation(customer.id, currentSession.id, chatId);
+      conversation = await createConversation(customer.id, currentSession.id);
     }
-    
-    // Adicionar ID aleatório à mensagem
-    const randomId = generateRandomId();
-    const messageWithId = `${message}\n\nid: ${randomId}`;
-    
-    // Enviar mensagem via WhatsApp
-    const toChatId = chatId || `55${customerPhone.replace(/\D/g, '')}@c.us`;
-    
+
+    // Gerar ID único para a mensagem
+    const messageWithId = `${message}`;
+    // Definir chat ID
+    let toChatId = customerPhone;
+
+    // Enviar mensagem com mídia se houver
+    let mediaType = 'text';
+    let mediaPath = null;
+    let media = null;
+
     if (req.files && (req.files.image || req.files.audio)) {
-      let media, mediaType, mediaPath;
-      
       if (req.files.image) {
         const imageFile = req.files.image[0];
         mediaPath = imageFile.path;
         media = MessageMedia.fromFilePath(mediaPath);
         mediaType = 'image';
+        await currentClient.sendMessage(toChatId, media, { caption: messageWithId });
       } else if (req.files.audio) {
         const audioFile = req.files.audio[0];
         mediaPath = audioFile.path;
         media = MessageMedia.fromFilePath(mediaPath);
         mediaType = 'audio';
+
+        // Enviar áudio sem configurações extras que podem causar problemas
+        await currentClient.sendMessage(toChatId, media, { sendAudioAsVoice: true });
       }
-      
-      // Tentar enviar com retry melhorado
-      let retryCount = 0;
-      const maxRetries = 3;
-      let sent = false;
-      
-      while (retryCount < maxRetries && !sent) {
-        try {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          
-          await currentClient.sendMessage(toChatId, media, { caption: messageWithId });
-          sent = true;
-        } catch (sendError) {
-          retryCount++;
-          
-          if (retryCount >= maxRetries) {
-            throw new Error(`Falha ao enviar mensagem após ${maxRetries} tentativas: ${sendError.message}`);
-          }
-          
-          const delay = retryCount * 3000;
-          await new Promise(resolve => setTimeout(resolve, delay));
-        }
-      }
-      
+
       // Salvar no banco
       await saveMessage(
         conversation.id,
@@ -1284,39 +1327,22 @@ app.post('/api/attendance/send-message', upload.fields([
         messageWithId,
         mediaType,
         mediaPath,
-        randomId
       );
-      
+
       // Limpar arquivo
-      try {
-        fs.unlinkSync(mediaPath);
-      } catch (unlinkError) {
-        console.error('Erro ao deletar arquivo:', unlinkError.message);
-      }
-    } else {
-      // Tentar enviar texto com retry melhorado
-      let retryCount = 0;
-      const maxRetries = 3;
-      let sent = false;
-      
-      while (retryCount < maxRetries && !sent) {
+      if (mediaPath) {
         try {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          
-          await currentClient.sendMessage(toChatId, messageWithId);
-          sent = true;
-        } catch (sendError) {
-          retryCount++;
-          
-          if (retryCount >= maxRetries) {
-            throw new Error(`Falha ao enviar mensagem após ${maxRetries} tentativas: ${sendError.message}`);
-          }
-          
-          const delay = retryCount * 3000;
-          await new Promise(resolve => setTimeout(resolve, delay));
+          fs.unlinkSync(mediaPath);
+        } catch (unlinkError) {
+          console.error('Erro ao deletar arquivo:', unlinkError.message);
         }
       }
-      
+    } else {
+      try {
+        await currentClient.sendMessage(toChatId, messageWithId);
+      } catch (sendError) {
+        console.log(`[DEBUG] Erro ao enviar mensagem: ${sendError}`);
+      }
       // Salvar no banco
       await saveMessage(
         conversation.id,
@@ -1326,64 +1352,68 @@ app.post('/api/attendance/send-message', upload.fields([
         messageWithId,
         'text',
         null,
-        randomId
       );
     }
-    
+
     // Emitir evento para atualizar interface
     io.to(`conversation-${conversation.id}`).emit('new-message', {
       conversationId: conversation.id,
       direction: 'outbound',
       content: messageWithId,
-      timestamp: new Date().toISOString()
+      timestamp: new Date(new Date().getTime() - (4 * 60 * 60 * 1000)).toISOString()
     });
-    
-    console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Mensagem de atendimento enviada para ${customer.name || customerPhone}`);
-    
+
+
     res.json({
       success: true,
       message: 'Mensagem enviada com sucesso',
       conversationId: conversation.id
     });
   } catch (error) {
-    console.error('Erro ao enviar mensagem de atendimento:', error);
-    
-    // Garantir que sempre retornamos um JSON válido
-    let errorMessage = 'Erro desconhecido ao enviar mensagem';
-    
-    if (error.message) {
-      errorMessage = error.message;
-    } else if (typeof error === 'string') {
-      errorMessage = error;
-    } else if (error.toString) {
-      errorMessage = error.toString();
-    }
-    
-    // Melhorar mensagens de erro específicas
-    if (errorMessage.includes('Evaluation failed')) {
-      errorMessage = 'WhatsApp Web não está respondendo. Verifique a conexão e tente novamente.';
-    } else if (errorMessage.includes('WhatsApp Web não está disponível')) {
-      errorMessage = 'WhatsApp Web foi desconectado. Reconecte e tente novamente.';
-    } else if (errorMessage.includes('Falha ao enviar mensagem após')) {
-      errorMessage = 'Não foi possível enviar a mensagem após várias tentativas. Tente novamente em alguns segundos.';
-    } else if (errorMessage.includes('Target closed')) {
-      errorMessage = 'Conexão com WhatsApp Web foi perdida. Reconecte e tente novamente.';
-    }
-    
-    // Log detalhado para debugging
-    console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao enviar mensagem: ${errorMessage}`);
-    
-    res.status(500).json({ 
-      success: false,
-      error: errorMessage
-    });
+  console.error('Erro ao enviar mensagem de atendimento:', error);
+
+  // Garantir que sempre retornamos um JSON válido
+  let errorMessage = 'Erro desconhecido ao enviar mensagem';
+
+  if (error.message) {
+    errorMessage = error.message;
+  } else if (typeof error === 'string') {
+    errorMessage = error;
+  } else if (error.toString) {
+    errorMessage = error.toString();
   }
+
+  // Melhorar mensagens de erro específicas
+  if (errorMessage.includes('Evaluation failed')) {
+    errorMessage = 'WhatsApp Web não está respondendo. Verifique a conexão e tente novamente.';
+  } else if (errorMessage.includes('WhatsApp Web não está disponível')) {
+    errorMessage = 'WhatsApp Web foi desconectado. Reconecte e tente novamente.';
+  } else if (errorMessage.includes('Falha ao enviar mensagem após')) {
+    errorMessage = 'Não foi possível enviar a mensagem após várias tentativas. Tente novamente em alguns segundos.';
+  } else if (errorMessage.includes('Target closed')) {
+    errorMessage = 'Conexão com WhatsApp Web foi perdida. Reconecte e tente novamente.';
+  } else if (errorMessage.includes('Protocol error')) {
+    errorMessage = 'Erro de comunicação com WhatsApp Web. Tente novamente.';
+  } else if (errorMessage.includes('Session closed')) {
+    errorMessage = 'Sessão do WhatsApp foi fechada. Reconecte e tente novamente.';
+  } else if (errorMessage.includes('Navigation timeout')) {
+    errorMessage = 'Timeout na navegação do WhatsApp Web. Verifique sua conexão.';
+  }
+
+  // Log detalhado para debugging
+  console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao enviar mensagem: ${errorMessage}`);
+
+  res.status(500).json({
+    success: false,
+    error: errorMessage
+  });
+}
 });
 
 // Chatwood - logs em tempo real
 io.on('connection', (socket) => {
   console.log(`[${new Date().toLocaleTimeString()}] SYSTEM: Cliente conectado ao chatwood`);
-  
+
   socket.on('disconnect', () => {
     console.log(`[${new Date().toLocaleTimeString()}] SYSTEM: Cliente desconectado do chatwood`);
   });
@@ -1394,42 +1424,42 @@ const loadSavedSessions = async () => {
   try {
     console.log('[SESSÕES] Carregando sessões salvas do banco de dados...');
     const savedSessions = await getAllSessions();
-    
+
     if (savedSessions.length === 0) {
       console.log('[SESSÕES] Nenhuma sessão salva encontrada');
       console.log(`[${new Date().toLocaleTimeString()}] INFO: Nenhuma sessão salva encontrada`);
       return;
     }
-    
+
     console.log(`[SESSÕES] Encontradas ${savedSessions.length} sessões salvas`);
     console.log(`[${new Date().toLocaleTimeString()}] INFO: Carregando ${savedSessions.length} sessões salvas`);
-    
+
     for (const dbSession of savedSessions) {
       try {
         console.log(`[SESSÕES] Carregando sessão: ${dbSession.session_name} (${dbSession.session_id})`);
         console.log(`[${new Date().toLocaleTimeString()}] INFO: Carregando sessão: ${dbSession.session_name}`);
-        
+
         // Criar a sessão em memória
         await createWhatsAppSession(dbSession.session_id, dbSession.session_name);
-        
+
         // Definir como sessão atual se for a primeira
         if (!currentSessionId) {
           currentSessionId = dbSession.session_id;
           console.log(`[SESSÕES] Definindo sessão atual: ${dbSession.session_name}`);
         }
-        
+
         console.log(`[SESSÕES] Sessão carregada com sucesso: ${dbSession.session_name}`);
         console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Sessão carregada: ${dbSession.session_name}`);
-        
+
       } catch (sessionError) {
         console.error(`[SESSÕES] Erro ao carregar sessão ${dbSession.session_name}:`, sessionError.message);
         console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao carregar sessão ${dbSession.session_name}: ${sessionError.message}`);
       }
     }
-    
+
     console.log(`[SESSÕES] Carregamento concluído. ${sessions.size} sessões ativas`);
     console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Carregamento concluído. ${sessions.size} sessões ativas`);
-    
+
   } catch (error) {
     console.error('[SESSÕES] Erro ao carregar sessões salvas:', error);
     console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao carregar sessões salvas: ${error.message}`);
@@ -1442,10 +1472,20 @@ const startServer = async () => {
     // Inicializar banco de dados
     await initDatabase();
     console.log(`[${new Date().toLocaleTimeString()}] SYSTEM: Banco de dados inicializado com sucesso`);
-    
+
+    // Unificar conversas duplicadas existentes
+    try {
+      const mergedCount = await mergeDuplicateConversations();
+      if (mergedCount > 0) {
+        console.log(`[${new Date().toLocaleTimeString()}] SYSTEM: ${mergedCount} grupos de conversas duplicadas foram unificados`);
+      }
+    } catch (mergeError) {
+      console.error(`[${new Date().toLocaleTimeString()}] WARNING: Erro ao unificar conversas:`, mergeError.message);
+    }
+
     // Carregar sessões salvas
     await loadSavedSessions();
-    
+
     // Iniciar servidor
     httpServer.listen(PORT, () => {
       console.log(`[${new Date().toLocaleTimeString()}] SYSTEM: Servidor iniciado na porta ${PORT}`);
@@ -1465,30 +1505,30 @@ const startServer = async () => {
 app.post('/api/sessions/:sessionId/reconnect', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    
+
     if (!sessions.has(sessionId)) {
       return res.status(404).json({ error: 'Sessão não encontrada' });
     }
-    
+
     const session = sessions.get(sessionId);
-    
+
     if (session.isInitializing) {
       return res.status(400).json({ error: 'Sessão já está tentando conectar' });
     }
-    
+
     console.log(`[${new Date().toLocaleTimeString()}] INFO: Reconexão manual solicitada para sessão: ${session.name}`);
-    
+
     // Marcar como inicializando
     session.isInitializing = true;
     session.isConnected = false;
     await updateSessionStatus(sessionId, 'connecting');
-    
+
     try {
       // Tentar reinicializar o cliente
       await session.client.initialize();
-      
+
       console.log(`[${new Date().toLocaleTimeString()}] SUCCESS: Reconexão manual bem-sucedida para sessão: ${session.name}`);
-      
+
       res.json({
         success: true,
         message: 'Sessão reconectada com sucesso',
@@ -1502,7 +1542,7 @@ app.post('/api/sessions/:sessionId/reconnect', async (req, res) => {
       console.error(`[${new Date().toLocaleTimeString()}] ERROR: Falha na reconexão manual para sessão ${session.name}:`, reconnectError.message);
       session.isInitializing = false;
       await updateSessionStatus(sessionId, 'disconnected');
-      
+
       res.status(500).json({
         success: false,
         error: `Falha na reconexão: ${reconnectError.message}`
@@ -1510,6 +1550,528 @@ app.post('/api/sessions/:sessionId/reconnect', async (req, res) => {
     }
   } catch (error) {
     console.error('Erro ao reconectar sessão:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== ROTAS DE AUTENTICAÇÃO ====================
+
+// Login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username e senha são obrigatórios' });
+    }
+
+    // Buscar usuário
+    const user = await getUserByUsername(username);
+    if (!user) {
+      return res.status(401).json({ error: 'Credenciais inválidas' });
+    }
+
+    // Verificar senha
+    const isValidPassword = await bcrypt.compare(password, user.password_hash);
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Credenciais inválidas' });
+    }
+
+    // Atualizar último login
+    await updateLastLogin(user.id);
+
+    // Gerar token JWT
+    const token = jwt.sign(
+      {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role
+      },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
+    // Retornar dados do usuário (sem senha) e token
+    const userData = {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      full_name: user.full_name,
+      role: user.role,
+      sector: user.sector,
+      last_login: user.last_login
+    };
+
+    res.json({
+      success: true,
+      message: 'Login realizado com sucesso',
+      token,
+      user: userData
+    });
+
+  } catch (error) {
+    console.error('Erro no login:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Cadastro
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { username, email, password, full_name, sector } = req.body;
+
+    // Validações
+    if (!username || !email || !password || !full_name) {
+      return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'A senha deve ter pelo menos 6 caracteres' });
+    }
+
+    // Verificar se username já existe
+    const existingUsername = await usernameExists(username);
+    if (existingUsername) {
+      return res.status(400).json({ error: 'Username já está em uso' });
+    }
+
+    // Verificar se email já existe
+    const existingEmail = await emailExists(email);
+    if (existingEmail) {
+      return res.status(400).json({ error: 'Email já está em uso' });
+    }
+
+    // Criar usuário
+    const newUser = await createUser(username, email, password, full_name, 'user', sector);
+
+    res.status(201).json({
+      success: true,
+      message: 'Usuário criado com sucesso',
+      user: {
+        id: newUser.id,
+        username: newUser.username,
+        email: newUser.email,
+        full_name: newUser.full_name,
+        role: newUser.role,
+        sector: newUser.sector
+      }
+    });
+
+  } catch (error) {
+    console.error('Erro no cadastro:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Verificar token (rota protegida)
+app.get('/api/auth/verify', authenticateToken, async (req, res) => {
+  try {
+    const user = await getUserById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        full_name: user.full_name,
+        role: user.role,
+        sector: user.sector,
+        last_login: user.last_login
+      }
+    });
+
+  } catch (error) {
+    console.error('Erro ao verificar token:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Listar usuários (apenas admin)
+app.get('/api/users', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const users = await getAllUsers();
+    res.json({
+      success: true,
+      users
+    });
+  } catch (error) {
+    console.error('Erro ao listar usuários:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Atualizar usuário (apenas admin)
+app.put('/api/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const updates = req.body;
+
+    // Verificar se o usuário existe
+    const existingUser = await getUserById(userId, true);
+    if (!existingUser) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    // Verificar se username já existe (se estiver sendo alterado)
+    if (updates.username && updates.username !== existingUser.username) {
+      const usernameExists = await usernameExists(updates.username);
+      if (usernameExists) {
+        return res.status(400).json({ error: 'Username já está em uso' });
+      }
+    }
+
+    // Verificar se email já existe (se estiver sendo alterado)
+    if (updates.email && updates.email !== existingUser.email) {
+      const emailExists = await emailExists(updates.email);
+      if (emailExists) {
+        return res.status(400).json({ error: 'Email já está em uso' });
+      }
+    }
+
+    // Validar senha se fornecida
+    if (updates.password && updates.password.length < 6) {
+      return res.status(400).json({ error: 'A senha deve ter pelo menos 6 caracteres' });
+    }
+
+    const success = await updateUser(userId, updates);
+    if (!success) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Usuário atualizado com sucesso'
+    });
+
+  } catch (error) {
+    console.error('Erro ao atualizar usuário:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Excluir usuário (apenas admin)
+app.delete('/api/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Verificar se não está tentando excluir a si mesmo
+    if (parseInt(userId) === req.user.id) {
+      return res.status(400).json({ error: 'Não é possível excluir seu próprio usuário' });
+    }
+
+    // Verificar se o usuário existe e é admin
+    const user = await getUserById(userId, true);
+    if (!user) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    if (user.role === 'admin') {
+      return res.status(400).json({ error: 'Não é possível excluir um administrador' });
+    }
+
+    // Excluir usuário (desativar)
+    const success = await deleteUser(userId);
+    if (!success) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Usuário excluído com sucesso'
+    });
+
+  } catch (error) {
+    console.error('Erro ao excluir usuário:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Alterar senha
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Senha atual e nova senha são obrigatórias' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'A nova senha deve ter pelo menos 6 caracteres' });
+    }
+
+    // Buscar usuário atual
+    const user = await getUserById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+
+    // Verificar senha atual
+    const isValidPassword = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!isValidPassword) {
+      return res.status(400).json({ error: 'Senha atual incorreta' });
+    }
+
+    // Alterar senha
+    await changePassword(req.user.id, newPassword);
+
+    res.json({
+      success: true,
+      message: 'Senha alterada com sucesso'
+    });
+
+  } catch (error) {
+    console.error('Erro ao alterar senha:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// ==================== ROTAS DE ATRIBUIÇÃO DE CONVERSAS ====================
+
+// Buscar agentes disponíveis
+app.get('/api/agents', authenticateToken, async (req, res) => {
+  try {
+    const agents = await getAvailableAgents();
+    res.json({
+      success: true,
+      agents
+    });
+  } catch (error) {
+    console.error('Erro ao buscar agentes:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Buscar conversas não atribuídas
+app.get('/api/conversations/unassigned', authenticateToken, async (req, res) => {
+  try {
+    const conversations = await getUnassignedConversations();
+    res.json({
+      success: true,
+      conversations
+    });
+  } catch (error) {
+    console.error('Erro ao buscar conversas não atribuídas:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Buscar conversas de um agente específico
+app.get('/api/conversations/agent/:agentId', authenticateToken, async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const { status } = req.query;
+
+    const conversations = await getConversationsByAgent(agentId, status);
+    res.json({
+      success: true,
+      conversations
+    });
+  } catch (error) {
+    console.error('Erro ao buscar conversas do agente:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Atribuir conversa a um agente
+app.post('/api/conversations/:conversationId/assign', authenticateToken, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { agentId } = req.body;
+
+    if (!agentId) {
+      return res.status(400).json({ error: 'ID do agente é obrigatório' });
+    }
+
+    // Verificar se o agente existe e é válido
+    const agent = await getUserById(agentId, true);
+    if (!agent || !agent.is_active) {
+      return res.status(400).json({ error: 'Agente não encontrado ou inativo' });
+    }
+
+    if (agent.role !== 'agent' && agent.role !== 'admin') {
+      return res.status(400).json({ error: 'Usuário não é um agente válido' });
+    }
+
+    const success = await assignConversationToAgent(conversationId, agentId);
+    if (!success) {
+      return res.status(404).json({ error: 'Conversa não encontrada' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Conversa atribuída com sucesso'
+    });
+
+  } catch (error) {
+    console.error('Erro ao atribuir conversa:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Remover atribuição de conversa
+app.post('/api/conversations/:conversationId/unassign', authenticateToken, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+
+    const success = await unassignConversation(conversationId);
+    if (!success) {
+      return res.status(404).json({ error: 'Conversa não encontrada' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Atribuição removida com sucesso'
+    });
+
+  } catch (error) {
+    console.error('Erro ao remover atribuição:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Atualizar rota de conversas recentes para incluir filtro por agente
+app.get('/api/conversations/recent', authenticateToken, async (req, res) => {
+  try {
+    const { limit = 10, agentId } = req.query;
+
+    // Se o usuário é agente, mostrar apenas suas conversas
+    // Se é admin, pode filtrar por agente específico ou ver todas
+    let targetAgentId = agentId;
+
+    if (req.user.role === 'agent') {
+      targetAgentId = req.user.id;
+    } else if (req.user.role === 'admin' && !agentId) {
+      targetAgentId = null; // Admin vê todas as conversas
+    }
+
+    const conversations = await getRecentConversations(parseInt(limit), targetAgentId);
+
+    res.json({
+      success: true,
+      conversations
+    });
+  } catch (error) {
+    console.error('Erro ao buscar conversas recentes:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Função para obter foto de perfil do contato
+const getContactProfilePicture = async (client, contactId) => {
+  try {
+    if (!client || !client.isConnected) {
+      console.log('[PROFILE PIC] Cliente não conectado');
+      return null;
+    }
+
+    const contact = await client.getContactById(contactId);
+
+    if (contact) {
+      const profilePicUrl = await contact.getProfilePicUrl();
+
+      if (profilePicUrl) {
+        console.log(`[PROFILE PIC] Foto de perfil para ${contact.name || contact.number}: ${profilePicUrl}`);
+        return profilePicUrl;
+      } else {
+        console.log(`[PROFILE PIC] Nenhuma foto de perfil encontrada para ${contact.name || contact.number}.`);
+        return null;
+      }
+    } else {
+      console.log(`[PROFILE PIC] Contato com ID ${contactId} não encontrado.`);
+      return null;
+    }
+  } catch (error) {
+    console.error(`[PROFILE PIC] Erro ao obter foto de perfil para ${contactId}:`, error.message);
+    return null;
+  }
+};
+
+// Função para obter informações completas do contato
+const getContactInfo = async (client, contactId) => {
+  try {
+
+    const contact = await client.getContactById(contactId);
+    console.log(contact)
+    if (contact) {
+      const profilePicUrl = await contact.getProfilePicUrl();
+      const contactName = contact.pushname || contact.name || null;
+
+      return {
+        profilePicture: profilePicUrl,
+        contactName
+      };
+    } else {
+      console.log(`[CONTACT INFO] Contato com ID ${contactId} não encontrado.`);
+      return { profilePicture: null, contactName: null };
+    }
+  } catch (error) {
+    console.error(`[CONTACT INFO] Erro ao obter informações do contato ${contactId}:`, error.message);
+    return { profilePicture: null, contactName: null };
+  }
+};
+
+// Buscar informações de um contato específico
+app.get('/api/attendance/contacts/:phone', async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const currentClient = getCurrentClient();
+
+    if (!currentClient || !currentClient.isConnected) {
+      return res.status(400).json({ error: 'WhatsApp não está conectado' });
+    }
+
+    // Formatar o número do telefone
+    const formattedPhone = phone.replace(/\D/g, '');
+    const chatId = `55${formattedPhone}@c.us`;
+
+    // Obter informações completas do contato
+    const contactInfo = await getContactInfo(currentClient, chatId);
+
+    res.json({
+      success: true,
+      contact: {
+        phone: formattedPhone,
+        chatId,
+        profilePicture: contactInfo.profilePicture,
+        contactName: contactInfo.contactName
+      }
+    });
+
+  } catch (error) {
+    console.error('Erro ao buscar informações do contato:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Buscar foto de perfil de um contato específico
+app.get('/api/attendance/contacts/:phone/profile-picture', async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const currentClient = getCurrentClient();
+
+    if (!currentClient || !currentClient.isConnected) {
+      return res.status(400).json({ error: 'WhatsApp não está conectado' });
+    }
+
+    // Formatar o número do telefone
+    const formattedPhone = phone.replace(/\D/g, '');
+    const chatId = `55${formattedPhone}@c.us`;
+
+    // Obter apenas a foto de perfil
+    const profilePicture = await getContactProfilePicture(currentClient, chatId);
+
+    res.json({
+      success: true,
+      profilePicture
+    });
+
+  } catch (error) {
+    console.error('Erro ao buscar foto de perfil:', error);
     res.status(500).json({ error: error.message });
   }
 });

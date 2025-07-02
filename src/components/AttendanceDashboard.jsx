@@ -18,20 +18,34 @@ import {
   InputAdornment,
   Tabs,
   Tab,
-  Badge
+  Badge,
+  Menu,
+  MenuItem,
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  FormControl,
+  InputLabel,
+  Select,
+  Alert,
+  ListItemSecondaryAction
 } from '@mui/material';
 import {
   People,
   Chat,
   Message,
   TrendingUp,
-  WhatsApp,
   AccessTime,
   Person,
   Group,
   Search,
   FilterList,
-  Refresh
+  Refresh,
+  Assignment,
+  PersonAdd,
+  MoreVert
 } from '@mui/icons-material';
 
 const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => {
@@ -45,7 +59,19 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
   const [filteredConversations, setFilteredConversations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [chatTypeFilter, setChatTypeFilter] = useState('all'); // 'all', 'private', 'group', 'channel'
+  const [chatTypeFilter, setChatTypeFilter] = useState('all'); // 'all', 'private', 'group'
+  
+  // Estados para atribuição de conversas
+  const [agents, setAgents] = useState([]);
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
+  const [selectedConversationForAssignment, setSelectedConversationForAssignment] = useState(null);
+  const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [assignmentLoading, setAssignmentLoading] = useState(false);
+  const [assignmentError, setAssignmentError] = useState('');
+  const [menuAnchorEl, setMenuAnchorEl] = useState(null);
+  const [selectedConversationForMenu, setSelectedConversationForMenu] = useState(null);
+  const [selectedAttendant, setSelectedAttendant] = useState('');
+  const [viewedConversations, setViewedConversations] = useState(new Map()); // Map para armazenar conversationId -> lastMessageTime
 
   const fetchDashboardData = async () => {
     try {
@@ -54,13 +80,177 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       
       if (data.success) {
         setStats(data.stats);
-        setAllConversations(data.recentConversations);
-        filterConversations(data.recentConversations, searchTerm, chatTypeFilter);
+        
+        // Preservar o estado local de conversas já visualizadas
+        setAllConversations(prevConversations => {
+          const newConversations = data.recentConversations;
+          
+          // Manter o estado local de has_unread_messages para conversas já marcadas como visualizadas
+          return newConversations.map(newConv => {
+            const existingConv = prevConversations.find(prev => prev.id === newConv.id);
+            
+            // Verificar se há novas mensagens
+            if (existingConv && existingConv.last_message_time !== newConv.last_message_time) {
+              console.log(`Nova mensagem detectada para conversa ${newConv.id}:`, {
+                oldTime: existingConv.last_message_time,
+                newTime: newConv.last_message_time,
+                hasUnread: newConv.has_unread_messages
+              });
+              // Há novas mensagens, remover do Map de visualizadas
+              setViewedConversations(prev => {
+                const newMap = new Map(prev);
+                newMap.delete(newConv.id);
+                return newMap;
+              });
+              // Manter o estado do servidor (has_unread_messages: true)
+              return newConv;
+            }
+            
+            // Se a conversa foi visualizada localmente E não há novas mensagens, manter como false
+            if (viewedConversations.has(newConv.id)) {
+              return { ...newConv, has_unread_messages: false };
+            }
+            
+            return newConv;
+          });
+        });
+        
+        // Filtrar as conversas atualizadas
+        setAllConversations(prevConversations => {
+          filterConversations(prevConversations, searchTerm, chatTypeFilter);
+          return prevConversations;
+        });
       }
     } catch (error) {
       console.error('Erro ao buscar dados do dashboard:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Carregar agentes disponíveis
+  const fetchAgents = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:3001/api/agents', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setAgents(data.agents);
+      }
+    } catch (error) {
+      console.error('Erro ao carregar agentes:', error);
+    }
+  };
+
+  // Abrir menu de ações da conversa
+  const handleMenuOpen = (event, conversation) => {
+    setMenuAnchorEl(event.currentTarget);
+    setSelectedConversationForMenu(conversation);
+  };
+
+  // Fechar menu de ações
+  const handleMenuClose = () => {
+    setMenuAnchorEl(null);
+    setSelectedConversationForMenu(null);
+  };
+
+  // Abrir diálogo de atribuição
+  const handleAssignClick = () => {
+    setSelectedConversationForAssignment(selectedConversationForMenu);
+    setSelectedAgentId('');
+    setAssignmentError('');
+    setAssignDialogOpen(true);
+    handleMenuClose();
+  };
+
+  // Fechar diálogo de atribuição
+  const handleAssignDialogClose = () => {
+    setAssignDialogOpen(false);
+    setSelectedConversationForAssignment(null);
+    setSelectedAgentId('');
+    setAssignmentError('');
+  };
+
+  // Atribuir conversa a um agente
+  const handleAssignConversation = async () => {
+    if (!selectedAgentId) {
+      setAssignmentError('Selecione um agente');
+      return;
+    }
+
+    setAssignmentLoading(true);
+    setAssignmentError('');
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`http://localhost:3001/api/conversations/${selectedConversationForAssignment.id}/assign`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ agentId: selectedAgentId })
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        // Atualizar a conversa na lista
+        setAllConversations(prev => 
+          prev.map(conv => 
+            conv.id === selectedConversationForAssignment.id 
+              ? { ...conv, assigned_agent_id: selectedAgentId }
+              : conv
+          )
+        );
+        
+        handleAssignDialogClose();
+        fetchDashboardData(); // Recarregar dados
+      } else {
+        setAssignmentError(data.error || 'Erro ao atribuir conversa');
+      }
+    } catch (error) {
+      setAssignmentError('Erro de conexão');
+    } finally {
+      setAssignmentLoading(false);
+    }
+  };
+
+  // Remover atribuição de conversa
+  const handleUnassignConversation = async () => {
+    setAssignmentLoading(true);
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`http://localhost:3001/api/conversations/${selectedConversationForMenu.id}/unassign`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        // Atualizar a conversa na lista
+        setAllConversations(prev => 
+          prev.map(conv => 
+            conv.id === selectedConversationForMenu.id 
+              ? { ...conv, assigned_agent_id: null }
+              : conv
+          )
+        );
+        
+        handleMenuClose();
+        fetchDashboardData(); // Recarregar dados
+      }
+    } catch (error) {
+      console.error('Erro ao remover atribuição:', error);
+    } finally {
+      setAssignmentLoading(false);
     }
   };
 
@@ -72,6 +262,11 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       filtered = filtered.filter(c => c.chat_type === chatType);
     }
 
+    // Filtrar por atendente
+    if (selectedAttendant) {
+      filtered = filtered.filter(c => c.assigned_agent_id === parseInt(selectedAttendant));
+    }
+
     // Filtrar por termo de busca
     if (search) {
       filtered = filtered.filter(c => 
@@ -81,17 +276,42 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       );
     }
 
-    setFilteredConversations(filtered);
+    // Preservar o estado local de has_unread_messages durante a filtragem
+    setFilteredConversations(prevFiltered => {
+      const newFiltered = filtered.map(newConv => {
+        const existingConv = prevFiltered.find(prev => prev.id === newConv.id);
+        
+        // Verificar se há novas mensagens
+        if (existingConv && existingConv.last_message_time !== newConv.last_message_time) {
+          // Há novas mensagens, não preservar estado local
+          return newConv;
+        }
+        
+        // Se a conversa foi visualizada localmente E não há novas mensagens, manter como false
+        if (viewedConversations.has(newConv.id)) {
+          return { ...newConv, has_unread_messages: false };
+        }
+        
+        return newConv;
+      });
+      return newFiltered;
+    });
   };
-
   useEffect(() => {
     fetchDashboardData();
-    // Remover atualização automática - apenas carregar uma vez
+    fetchAgents();
+
+    // Atualizar dados a cada 10 segundos
+    const interval = setInterval(() => {
+      fetchDashboardData(); 
+    }, 10000);
+
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
     filterConversations(allConversations, searchTerm, chatTypeFilter);
-  }, [searchTerm, allConversations, chatTypeFilter]);
+  }, [searchTerm, allConversations, chatTypeFilter, selectedAttendant, viewedConversations]);
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -121,15 +341,25 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
 
   const formatDate = (dateString) => {
     const date = new Date(dateString);
+    // Ajustar para fuso horário local (GMT-4 - Campo Grande)
+    const localDate = new Date(date.getTime() + (4 * 60 * 60 * 1000));
     const now = new Date();
-    const diffInHours = (now - date) / (1000 * 60 * 60);
+    const diffInHours = (now - localDate) / (1000 * 60 * 60);
     
     if (diffInHours < 24) {
-      return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      return localDate.toLocaleTimeString('pt-BR', { 
+        timeZone: 'America/Campo_Grande',
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
     } else if (diffInHours < 48) {
       return 'Ontem';
     } else {
-      return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+      return localDate.toLocaleDateString('pt-BR', { 
+        timeZone: 'America/Campo_Grande',
+        day: '2-digit', 
+        month: '2-digit' 
+      });
     }
   };
 
@@ -149,17 +379,20 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       return conversation.chat_name;
     }
     
-    // Quarta prioridade: número formatado
-    if (conversation.customer_phone) {
-      // Limpar número para exibição
-      const phone = conversation.customer_phone.replace(/\D/g, '');
-      if (phone.length === 11) {
-        return `(${phone.slice(0,2)}) ${phone.slice(2,7)}-${phone.slice(7)}`;
-      }
-      return phone;
-    }
-    
     return 'Cliente';
+  };
+
+  const formatPhoneNumber = (phone) => {
+    if (!phone) return '';
+    
+    // Limpar número para exibição
+    const cleanPhone = phone.replace(/\D/g, '');
+    if (cleanPhone.length === 11) {
+      return `(${cleanPhone.slice(0,2)}) ${cleanPhone.slice(2,7)}-${cleanPhone.slice(7)}`;
+    } else if (cleanPhone.length === 10) {
+      return `(${cleanPhone.slice(0,2)}) ${cleanPhone.slice(2,6)}-${cleanPhone.slice(6)}`;
+    }
+    return cleanPhone;
   };
 
   const getConversationAvatar = (conversation) => {
@@ -170,22 +403,35 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
           src={conversation.profilePicture} 
           alt={getConversationName(conversation)}
           sx={{ width: 40, height: 40 }}
-        />
+          onError={(e) => {
+            // Se a imagem falhar ao carregar, usar ícone padrão
+            e.target.style.display = 'none';
+            e.target.nextSibling.style.display = 'flex';
+          }}
+        >
+          {/* Fallback se a imagem falhar */}
+          <Box display="none" alignItems="center" justifyContent="center" width="100%" height="100%">
+            {conversation.chat_type === 'group' ? <Group /> : <Person />}
+          </Box>
+        </Avatar>
       );
     }
     
     // Se é grupo, usar ícone de grupo
     if (conversation.chat_type === 'group') {
-      return <Group />;
-    }
-    
-    // Se é canal, usar ícone do WhatsApp
-    if (conversation.chat_type === 'channel') {
-      return <WhatsApp />;
+      return (
+        <Avatar sx={{ width: 40, height: 40, bgcolor: 'secondary.main' }}>
+          <Group />
+        </Avatar>
+      );
     }
     
     // Padrão: ícone de pessoa
-    return <Person />;
+    return (
+      <Avatar sx={{ width: 40, height: 40, bgcolor: 'primary.main' }}>
+        <Person />
+      </Avatar>
+    );
   };
 
   const getUnreadCount = (conversation) => {
@@ -193,10 +439,34 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
     return conversation.has_unread_messages ? 1 : 0;
   };
 
+  // Obter nome do agente atribuído
+  const getAssignedAgentName = (conversation) => {
+    if (!conversation.assigned_agent_id) return null;
+    
+    const agent = agents.find(a => a.id === conversation.assigned_agent_id);
+    return agent ? agent.full_name : 'Agente desconhecido';
+  };
+
   const markConversationAsSeen = async (conversationId) => {
     try {
+      // Encontrar a conversa atual para obter o timestamp da última mensagem
+      const currentConversation = allConversations.find(conv => conv.id === conversationId);
+      const lastMessageTime = currentConversation?.last_message_time;
+      
+      // Adicionar à lista de conversas visualizadas com o timestamp
+      setViewedConversations(prev => new Map(prev.set(conversationId, lastMessageTime)));
+      
       // Marcar imediatamente no estado local para feedback instantâneo
       setAllConversations(prev => 
+        prev.map(conv => 
+          conv.id === conversationId 
+            ? { ...conv, has_unread_messages: false }
+            : conv
+        )
+      );
+      
+      // Atualizar também a lista filtrada
+      setFilteredConversations(prev => 
         prev.map(conv => 
           conv.id === conversationId 
             ? { ...conv, has_unread_messages: false }
@@ -210,7 +480,19 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       }).catch(error => {
         console.error('Erro ao marcar conversa como visualizada:', error);
         // Reverter se falhar
+        setViewedConversations(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(conversationId);
+          return newMap;
+        });
         setAllConversations(prev => 
+          prev.map(conv => 
+            conv.id === conversationId 
+              ? { ...conv, has_unread_messages: true }
+              : conv
+          )
+        );
+        setFilteredConversations(prev => 
           prev.map(conv => 
             conv.id === conversationId 
               ? { ...conv, has_unread_messages: true }
@@ -239,13 +521,32 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
           <Typography variant="h6">
             Conversas
           </Typography>
-          <IconButton 
-            onClick={fetchDashboardData}
-            disabled={loading}
-            title="Atualizar conversas"
-          >
-            <Refresh />
-          </IconButton>
+          <Box display="flex" alignItems="center" gap={2}>
+            <FormControl size="small" sx={{ minWidth: 200 }}>
+              <InputLabel>Atendente</InputLabel>
+              <Select
+                value={selectedAttendant}
+                onChange={(e) => setSelectedAttendant(e.target.value)}
+                label="Atendente"
+              >
+                <MenuItem value="">
+                  <em>Todos os atendentes</em>
+                </MenuItem>
+                {agents.map((agent) => (
+                  <MenuItem key={agent.id} value={agent.id}>
+                    {agent.full_name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <IconButton 
+              onClick={fetchDashboardData}
+              disabled={loading}
+              title="Atualizar conversas"
+            >
+              <Refresh />
+            </IconButton>
+          </Box>
         </Box>
         
         {/* Filtro de tipo de chat */}
@@ -272,14 +573,6 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
             onClick={() => setChatTypeFilter('group')}
             size="small"
             icon={<Group />}
-          />
-          <Chip
-            label="Canais"
-            color={chatTypeFilter === 'channel' ? 'primary' : 'default'}
-            variant={chatTypeFilter === 'channel' ? 'filled' : 'outlined'}
-            onClick={() => setChatTypeFilter('channel')}
-            size="small"
-            icon={<WhatsApp />}
           />
         </Box>
         
@@ -313,59 +606,58 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
         ) : (
           <List sx={{ p: 0 }}>
             {filteredConversations.map((conversation) => (
-                              <ListItem
-                  key={conversation.id}
-                  selected={selectedConversation?.id === conversation.id}
-                  onClick={() => {
-                    onSelectConversation(conversation);
-                    // Marcar como visualizada quando clicar
-                    if (conversation.has_unread_messages) {
-                      markConversationAsSeen(conversation.id);
-                    }
-                  }}
-                  sx={{
-                    borderBottom: '1px solid',
-                    borderColor: 'divider',
-                    backgroundColor: conversation.has_unread_messages ? 'warning.light' : 'transparent',
-                    fontWeight: conversation.has_unread_messages ? 'bold' : 'normal',
+              <ListItem
+                key={conversation.id}
+                selected={selectedConversation?.id === conversation.id}
+                onClick={() => {
+                  onSelectConversation(conversation);
+                  // Marcar como visualizada quando clicar
+                  if (conversation.has_unread_messages) {
+                    markConversationAsSeen(conversation.id);
+                  }
+                }}
+                sx={{
+                  borderBottom: '1px solid',
+                  borderColor: 'divider',
+                  backgroundColor: conversation.has_unread_messages ? 'warning.light' : 'transparent',
+                  fontWeight: conversation.has_unread_messages ? 'bold' : 'normal',
+                  '&:hover': {
+                    backgroundColor: conversation.has_unread_messages ? 'warning.main' : 'action.hover'
+                  },
+                  '&.Mui-selected': {
+                    backgroundColor: 'primary.light',
                     '&:hover': {
-                      backgroundColor: conversation.has_unread_messages ? 'warning.main' : 'action.hover'
-                    },
-                    '&.Mui-selected': {
-                      backgroundColor: 'primary.light',
-                      '&:hover': {
-                        backgroundColor: 'primary.light'
-                      }
+                      backgroundColor: 'primary.light'
                     }
-                  }}
-                >
-                                  <ListItemAvatar>
-                    <Badge
-                      badgeContent={getUnreadCount(conversation)}
-                      color="error"
-                      invisible={getUnreadCount(conversation) === 0}
-                    >
-                      {conversation.profilePicture ? (
-                        <Avatar 
-                          src={conversation.profilePicture} 
-                          alt={getConversationName(conversation)}
-                          sx={{ 
-                            width: 40, 
-                            height: 40,
-                            bgcolor: conversation.has_unread_messages ? 'warning.main' : 'primary.main'
-                          }}
-                        />
-                      ) : (
-                        <Avatar sx={{ 
-                          bgcolor: conversation.has_unread_messages ? 'warning.main' : 
-                                  conversation.chat_type === 'group' ? 'secondary.main' : 
-                                  conversation.chat_type === 'channel' ? 'info.main' : 'primary.main' 
-                        }}>
-                          {getConversationAvatar(conversation)}
-                        </Avatar>
-                      )}
-                    </Badge>
-                  </ListItemAvatar>
+                  }
+                }}
+              >
+                <ListItemAvatar>
+                  <Badge
+                    badgeContent={getUnreadCount(conversation)}
+                    color="error"
+                    invisible={getUnreadCount(conversation) === 0}
+                  >
+                    {conversation.profilePicture ? (
+                      <Avatar 
+                        src={conversation.profilePicture} 
+                        alt={getConversationName(conversation)}
+                        sx={{ 
+                          width: 40, 
+                          height: 40,
+                          bgcolor: conversation.has_unread_messages ? 'warning.main' : 'primary.main'
+                        }}
+                      />
+                    ) : (
+                      <Avatar sx={{ 
+                        bgcolor: conversation.has_unread_messages ? 'warning.main' : 
+                                conversation.chat_type === 'group' ? 'secondary.main' : 'primary.main' 
+                      }}>
+                        {getConversationAvatar(conversation)}
+                      </Avatar>
+                    )}
+                  </Badge>
+                </ListItemAvatar>
                 
                 <ListItemText
                   primary={
@@ -381,7 +673,7 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
                   secondary={
                     <React.Fragment>
                       <Typography variant="body2" color="text.secondary" noWrap>
-                        {conversation.message_count || 0} mensagens
+                        {formatPhoneNumber(conversation.customer_phone)} • {conversation.message_count || 0} mensagens
                       </Typography>
                       <Box display="flex" alignItems="center" gap={1} mt={0.5}>
                         <Chip
@@ -399,24 +691,101 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
                             color="secondary"
                           />
                         )}
-                        {conversation.chat_type === 'channel' && (
+                        {getAssignedAgentName(conversation) && (
                           <Chip
-                            icon={<WhatsApp />}
-                            label="Canal"
+                            icon={<Assignment />}
+                            label={getAssignedAgentName(conversation)}
                             size="small"
                             variant="outlined"
-                            color="info"
+                            color="success"
                           />
                         )}
                       </Box>
                     </React.Fragment>
                   }
                 />
+                
+                {/* Menu de ações */}
+                <ListItemSecondaryAction>
+                  <IconButton
+                    edge="end"
+                    onClick={(e) => handleMenuOpen(e, conversation)}
+                    size="small"
+                  >
+                    <MoreVert />
+                  </IconButton>
+                </ListItemSecondaryAction>
               </ListItem>
             ))}
           </List>
         )}
       </Box>
+
+      {/* Menu de ações da conversa */}
+      <Menu
+        anchorEl={menuAnchorEl}
+        open={Boolean(menuAnchorEl)}
+        onClose={handleMenuClose}
+      >
+        {selectedConversationForMenu && (
+          <>
+            {!selectedConversationForMenu.assigned_agent_id ? (
+              <MenuItem onClick={handleAssignClick}>
+                <Assignment sx={{ mr: 1 }} />
+                Atribuir a agente
+              </MenuItem>
+            ) : (
+              <MenuItem onClick={handleUnassignConversation}>
+                <PersonAdd sx={{ mr: 1 }} />
+                Remover atribuição
+              </MenuItem>
+            )}
+          </>
+        )}
+      </Menu>
+
+      {/* Diálogo de atribuição */}
+      <Dialog open={assignDialogOpen} onClose={handleAssignDialogClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Atribuir Conversa</DialogTitle>
+        <DialogContent>
+          <Box display="flex" flexDirection="column" gap={2} sx={{ mt: 2 }}>
+            {assignmentError && (
+              <Alert severity="error" onClose={() => setAssignmentError('')}>
+                {assignmentError}
+              </Alert>
+            )}
+            
+            <Typography variant="body2" color="text.secondary">
+              Conversa: <strong>{selectedConversationForAssignment?.customer_name || 'Cliente'}</strong>
+            </Typography>
+            
+            <FormControl fullWidth>
+              <InputLabel>Selecionar Agente</InputLabel>
+              <Select
+                value={selectedAgentId}
+                onChange={(e) => setSelectedAgentId(e.target.value)}
+                label="Selecionar Agente"
+              >
+                {agents.map((agent) => (
+                  <MenuItem key={agent.id} value={agent.id}>
+                    {agent.full_name} ({agent.role})
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleAssignDialogClose}>Cancelar</Button>
+          <Button 
+            onClick={handleAssignConversation} 
+            variant="contained"
+            disabled={assignmentLoading || !selectedAgentId}
+          >
+            {assignmentLoading ? 'Atribuindo...' : 'Atribuir'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

@@ -32,7 +32,8 @@ import {
   Stop,
   PlayArrow,
   Pause,
-  AudioFile
+  Audiotrack,
+  Close
 } from '@mui/icons-material';
 import { io } from 'socket.io-client';
 
@@ -52,6 +53,8 @@ const AttendanceChat = ({ conversation, onBack }) => {
   const [showImageDialog, setShowImageDialog] = useState(false);
   const [messageCache, setMessageCache] = useState(new Map()); // Cache para mensagens
   const [socket, setSocket] = useState(null);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [microphoneError, setMicrophoneError] = useState('');
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const audioInputRef = useRef(null);
@@ -151,7 +154,7 @@ const AttendanceChat = ({ conversation, onBack }) => {
       id: tempId,
       content: messageToSend,
       direction: 'outbound',
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(new Date().getTime() - (4 * 60 * 60 * 1000)).toISOString(),
       status: 'sending',
       conversation_id: conversation.id
     };
@@ -221,7 +224,8 @@ const AttendanceChat = ({ conversation, onBack }) => {
               : msg
           )
         );
-        alert('Erro ao enviar mensagem: ' + data.error);
+        setErrorMessage('Erro ao enviar mensagem: ' + data.error);
+        setTimeout(() => setErrorMessage(''), 5000);
       }
     } catch (error) {
       console.error('Erro ao enviar mensagem:', error);
@@ -233,7 +237,8 @@ const AttendanceChat = ({ conversation, onBack }) => {
             : msg
         )
       );
-      alert('Erro ao enviar mensagem. Tente novamente.');
+      setErrorMessage('Erro ao enviar mensagem. Tente novamente.');
+      setTimeout(() => setErrorMessage(''), 5000);
     } finally {
       setSending(false);
     }
@@ -325,7 +330,8 @@ const AttendanceChat = ({ conversation, onBack }) => {
       
     } catch (error) {
       console.error('Erro ao iniciar gravação:', error);
-      alert('Erro ao acessar microfone. Verifique as permissões.');
+      setMicrophoneError('Erro ao acessar microfone. Verifique as permissões.');
+      setTimeout(() => setMicrophoneError(''), 5000);
     }
   };
 
@@ -369,7 +375,16 @@ const AttendanceChat = ({ conversation, onBack }) => {
 
   const formatDate = (dateString) => {
     const date = new Date(dateString);
-    return date.toLocaleString('pt-BR');
+    // Ajustar para fuso horário local (GMT-4 - Campo Grande)
+    const localDate = new Date(date.getTime() + (4 * 60 * 60 * 1000));
+    return localDate.toLocaleString('pt-BR', {
+      timeZone: 'America/Campo_Grande',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
   };
 
   const getMessageStatus = (status) => {
@@ -396,21 +411,46 @@ const AttendanceChat = ({ conversation, onBack }) => {
       </Box>
     );
   }
+  console.log(conversation)
 
   return (
     <Box height="100%" display="flex" flexDirection="column">
+      {/* Notificações de erro */}
+      {errorMessage && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setErrorMessage('')}>
+          {errorMessage}
+        </Alert>
+      )}
+      
+      {microphoneError && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setMicrophoneError('')}>
+          {microphoneError}
+        </Alert>
+      )}
+      
       {/* Header */}
       <Paper sx={{ p: 2, mb: 2 }}>
         <Box display="flex" alignItems="center" gap={2}>
           <Avatar>
-            <Person />
+            {conversation.profilePicture ? (
+              <img 
+                src={conversation.profilePicture} 
+                alt="Foto de perfil" 
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+            ) : (
+              <Person />
+            )}
           </Avatar>
           <Box flex={1}>
             <Typography variant="h6">
-              {conversation.customer_name || conversation.customer_phone || 'Cliente'}
+              {conversation.contactName || conversation.customer_phone || 'Cliente'}
             </Typography>
             <Typography variant="body2" color="text.secondary">
               {conversation.customer_phone}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {conversation?.agent_name}
             </Typography>
           </Box>
           <Chip
@@ -524,7 +564,7 @@ const AttendanceChat = ({ conversation, onBack }) => {
             disabled={sending}
             title="Anexar áudio"
           >
-            <AudioFile />
+            <Audiotrack />
           </IconButton>
           
           {!isRecording ? (
@@ -590,7 +630,7 @@ const AttendanceChat = ({ conversation, onBack }) => {
                 {recordingTime > 0 ? formatTime(recordingTime) : ''}
               </Typography>
               <IconButton onClick={removeAudio} size="small" color="error">
-                <Error />
+                <Close />
               </IconButton>
             </Box>
             {audioUrl && (
@@ -605,13 +645,13 @@ const AttendanceChat = ({ conversation, onBack }) => {
         )}
         
         {imageFile && (
-          <Alert severity="info" sx={{ mt: 1 }}>
+          <Alert severity="info" sx={{ mt: 1 }} onClose={() => setImageFile(null)}>
             Imagem selecionada: {imageFile.name}
           </Alert>
         )}
         
         {isRecording && (
-          <Alert severity="warning" sx={{ mt: 1 }}>
+          <Alert severity="warning" sx={{ mt: 1 }} onClose={() => {}}>
             Gravando áudio... {formatTime(recordingTime)}
           </Alert>
         )}

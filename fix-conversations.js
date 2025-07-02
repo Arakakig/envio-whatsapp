@@ -40,9 +40,6 @@ async function fixConversations() {
     if (!chatType || chatType === 'undefined' || chatType === '') {
       if (conv.chat_id?.endsWith('@c.us')) chatType = 'private';
       else if (conv.chat_id?.endsWith('@g.us')) chatType = 'group';
-      else if (conv.chat_id?.endsWith('@newsletter')) chatType = 'newsletter';
-      else if (conv.chat_id?.endsWith('@broadcast')) chatType = 'broadcast';
-      else if (conv.chat_id?.endsWith('@channel')) chatType = 'channel';
       else chatType = 'private';
     }
     if (!chatName || chatName === 'undefined' || chatName === '') {

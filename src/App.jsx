@@ -25,7 +25,12 @@ import {
   ListItemSecondaryAction,
   Accordion,
   AccordionSummary,
-  AccordionDetails
+  AccordionDetails,
+  AppBar,
+  Toolbar,
+  Menu,
+  MenuItem,
+  Avatar
 } from '@mui/material';
 import {
   WhatsApp as WhatsAppIcon,
@@ -41,12 +46,17 @@ import {
   CheckCircle as CheckCircleIcon,
   ExpandMore as ExpandMoreIcon,
   Support,
-  Dashboard
+  Dashboard,
+  Logout as LogoutIcon,
+  AccountCircle as AccountCircleIcon
 } from '@mui/icons-material';
 import { DataGrid } from '@mui/x-data-grid';
 import Papa from 'papaparse';
 import AttendanceDashboard from './components/AttendanceDashboard';
 import AttendanceChat from './components/AttendanceChat';
+import Login from './components/Login';
+import Register from './components/Register';
+import UserManagement from './components/UserManagement';
 
 // URL da API backend
 const API_BASE_URL = 'http://localhost:3001/api';
@@ -78,8 +88,14 @@ function App() {
   const [socket, setSocket] = useState(null);
   
   // Estados para atendimento
-  const [currentView, setCurrentView] = useState('bulk'); // 'bulk', 'attendance'
+  const [currentView, setCurrentView] = useState('bulk'); // 'bulk', 'attendance', 'userManagement'
   const [selectedConversation, setSelectedConversation] = useState(null);
+
+  // Estados de autenticação
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authView, setAuthView] = useState('login'); // 'login', 'register'
+  const [anchorEl, setAnchorEl] = useState(null);
 
   // Configurar Socket.IO
   useEffect(() => {
@@ -655,11 +671,144 @@ function App() {
     ...contact
   }));
 
+  // Verificar se o cliente está pronto para envio
+  const isClientReady = (client) => {
+    return client && client.isConnected && client.pupPage && !client.pupPage.isClosed();
+  };
+
+  // ==================== FUNÇÕES DE AUTENTICAÇÃO ====================
+
+  // Verificar token ao carregar a aplicação
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    const user = localStorage.getItem('user');
+    
+    if (token && user) {
+      verifyToken(token, JSON.parse(user));
+    }
+  }, []);
+
+  // Verificar token
+  const verifyToken = async (token, user) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/verify`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        setIsAuthenticated(true);
+        setCurrentUser(user);
+      } else {
+        // Token inválido, limpar localStorage
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        setIsAuthenticated(false);
+        setCurrentUser(null);
+      }
+    } catch (error) {
+      console.error('Erro ao verificar token:', error);
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      setIsAuthenticated(false);
+      setCurrentUser(null);
+    }
+  };
+
+  // Função de login
+  const handleLogin = (token, user) => {
+    setIsAuthenticated(true);
+    setCurrentUser(user);
+    setAuthView('login');
+  };
+
+  // Função de registro
+  const handleRegister = (user) => {
+    setAuthView('login');
+    setError('Conta criada com sucesso! Faça login para continuar.');
+    setTimeout(() => setError(''), 5000);
+  };
+
+  // Função de logout
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setIsAuthenticated(false);
+    setCurrentUser(null);
+    setAnchorEl(null);
+  };
+
+  // Alternar entre login e registro
+  const switchToLogin = () => {
+    setAuthView('login');
+    setError('');
+  };
+
+  const switchToRegister = () => {
+    setAuthView('register');
+    setError('');
+  };
+
+  // Abrir/fechar menu do usuário
+  const handleMenuOpen = (event) => {
+    setAnchorEl(event.currentTarget);
+  };
+
+  const handleMenuClose = () => {
+    setAnchorEl(null);
+  };
+
+  // Se não estiver autenticado, mostrar tela de login/registro
+  if (!isAuthenticated) {
+    return (
+      <>
+        {authView === 'login' ? (
+          <Login onLogin={handleLogin} onSwitchToRegister={switchToRegister} />
+        ) : (
+          <Register onRegister={handleRegister} onSwitchToLogin={switchToLogin} />
+        )}
+      </>
+    );
+  }
+
   return (
     <Container maxWidth="lg" sx={{ py: 4 }}>
-      <Typography variant="h3" component="h1" gutterBottom align="center" sx={{ mb: 4 }}>
-        📱 Plataforma WhatsApp Omnichannel
-      </Typography>
+      {/* Header com AppBar */}
+      <AppBar position="static" sx={{ mb: 4 }}>
+        <Toolbar>
+          <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
+            📱 Plataforma WhatsApp Omnichannel
+          </Typography>
+          
+          {/* Menu do usuário */}
+          <Box display="flex" alignItems="center" gap={2}>
+            <Typography variant="body2" color="inherit">
+              Olá, {currentUser?.full_name || currentUser?.username}
+            </Typography>
+            <IconButton
+              color="inherit"
+              onClick={handleMenuOpen}
+            >
+              <AccountCircleIcon />
+            </IconButton>
+            <Menu
+              anchorEl={anchorEl}
+              open={Boolean(anchorEl)}
+              onClose={handleMenuClose}
+            >
+              <MenuItem onClick={handleMenuClose}>
+                <PersonIcon sx={{ mr: 1 }} />
+                Perfil: {currentUser?.role}
+              </MenuItem>
+              <MenuItem onClick={handleLogout}>
+                <LogoutIcon sx={{ mr: 1 }} />
+                Sair
+              </MenuItem>
+            </Menu>
+          </Box>
+        </Toolbar>
+      </AppBar>
 
       {/* Navegação */}
       <Paper sx={{ p: 2, mb: 3 }}>
@@ -677,6 +826,13 @@ function App() {
             onClick={() => setCurrentView('attendance')}
           >
             Atendimento ao Cliente
+          </Button>
+          <Button
+            variant={currentView === 'userManagement' ? 'contained' : 'outlined'}
+            startIcon={<PersonIcon />}
+            onClick={() => setCurrentView('userManagement')}
+          >
+            Gerenciamento de Usuários
           </Button>
         </Box>
       </Paper>
@@ -717,6 +873,11 @@ function App() {
         </Box>
       )}
 
+      {/* Interface de Gerenciamento de Usuários */}
+      {currentView === 'userManagement' && currentUser?.role === 'admin' && (
+        <UserManagement />
+      )}
+
       {/* Interface de Envio em Massa */}
       {currentView === 'bulk' && (
         <Box>
@@ -741,7 +902,7 @@ function App() {
         </Box>
 
         {sessions.length === 0 ? (
-          <Alert severity="info">
+          <Alert severity="info" onClose={() => {}}>
             Nenhuma sessão encontrada. Clique em "Nova Sessão" para criar uma.
           </Alert>
         ) : (

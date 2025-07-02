@@ -13,7 +13,19 @@ async function checkDatabase() {
       driver: sqlite3.Database
     });
 
-    console.log('=== VERIFICANDO BANCO DE DADOS ===\n');
+    console.log('Verificando estrutura do banco de dados...');
+
+    // Verificar colunas da tabela conversations
+    const conversationsColumns = await db.all('PRAGMA table_info(conversations);');
+    console.log('\nColunas da tabela conversations:');
+    conversationsColumns.forEach(col => console.log(`- ${col.name} (${col.type})`));
+
+    // Verificar algumas conversas
+    const conversations = await db.all('SELECT * FROM conversations LIMIT 5');
+    console.log('\nPrimeiras 5 conversas:');
+    conversations.forEach(conv => {
+      console.log(`ID: ${conv.id}, Customer ID: ${conv.customer_id}, Chat ID: ${conv.chat_id}, Status: ${conv.status}`);
+    });
 
     // Verificar tabelas
     const tables = await db.all("SELECT name FROM sqlite_master WHERE type='table';");
@@ -23,11 +35,6 @@ async function checkDatabase() {
     const customers = await db.all('SELECT * FROM customers LIMIT 5;');
     console.log('\nClientes (primeiros 5):', customers.length);
     customers.forEach(c => console.log(`- ${c.phone} (${c.name || 'sem nome'})`));
-
-    // Verificar conversas
-    const conversations = await db.all('SELECT * FROM conversations LIMIT 5;');
-    console.log('\nConversas (primeiras 5):', conversations.length);
-    conversations.forEach(c => console.log(`- ID: ${c.id}, Cliente: ${c.customer_id}, Chat ID: ${c.chat_id || 'N/A'}, Tipo: ${c.chat_type || 'N/A'}, Nome: ${c.chat_name || 'N/A'}`));
 
     // Verificar mensagens
     const messages = await db.all('SELECT * FROM messages LIMIT 5;');
@@ -94,4 +101,4 @@ async function checkDatabase() {
   }
 }
 
-checkDatabase(); 
+checkDatabase().catch(console.error); 
