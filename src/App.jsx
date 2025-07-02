@@ -30,7 +30,9 @@ import {
   Toolbar,
   Menu,
   MenuItem,
-  Avatar
+  Avatar,
+  Slide,
+  Fade
 } from '@mui/material';
 import {
   WhatsApp as WhatsAppIcon,
@@ -96,6 +98,10 @@ function App() {
   const [currentView, setCurrentView] = useState('bulk'); // 'bulk', 'attendance', 'userManagement', 'internalChat', 'customerNotes'
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
+
+  // Estado para notificação de sucesso
+  const [showSuccessMessage, setShowSuccessMessage] = useState(false);
+  const [successData, setSuccessData] = useState(null);
 
   // Estados de autenticação
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -204,15 +210,55 @@ function App() {
         setValidationResults(data);
         setInvalidNumbers(data.validationResults.filter(r => !r.validated.shouldSend));
         console.log('Validação concluída com sucesso');
-        setError(`Validação concluída! ${data.summary.valid} válidos, ${data.summary.invalid} inválidos.`);
+        const validationMessage = `Validação concluída! ${data.summary.valid} válidos, ${data.summary.invalid} inválidos.`;
+        setError(validationMessage);
+        
+        // Notificação de validação concluída
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('✅ Validação Concluída', {
+            body: validationMessage,
+            icon: '/public/vite.svg',
+            badge: '/public/vite.svg',
+            tag: 'whatsapp-validacao',
+            requireInteraction: false,
+            silent: false
+          });
+        }
+        
         setTimeout(() => setError(''), 5000);
       } else {
         console.error('Erro na resposta:', data);
-        setError(data.error || 'Erro ao validar números');
+        const errorMessage = data.error || 'Erro ao validar números';
+        setError(errorMessage);
+        
+        // Notificação de erro na validação
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('❌ Erro na Validação', {
+            body: errorMessage,
+            icon: '/public/vite.svg',
+            badge: '/public/vite.svg',
+            tag: 'whatsapp-validacao-erro',
+            requireInteraction: false,
+            silent: false
+          });
+        }
       }
     } catch (err) {
       console.error('Erro ao validar números:', err);
-      setError('Erro ao validar números: ' + err.message);
+      const errorMessage = 'Erro ao validar números: ' + err.message;
+      setError(errorMessage);
+      
+      // Notificação de erro de validação
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('❌ Erro na Validação', {
+          body: errorMessage,
+          icon: '/public/vite.svg',
+          badge: '/public/vite.svg',
+          tag: 'whatsapp-validacao-erro-rede',
+          requireInteraction: false,
+          silent: false
+        });
+      }
     } finally {
       setIsValidating(false);
     }
@@ -412,6 +458,26 @@ function App() {
     setChatwoodLogs([]);
   };
 
+  // Testar notificação
+  const testNotification = () => {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification('Teste de Notificação', {
+        body: 'Esta é uma notificação de teste do WhatsApp Disparador',
+        icon: '/public/vite.svg',
+        badge: '/public/vite.svg',
+        tag: 'teste-notificacao',
+        requireInteraction: false,
+        silent: false
+      });
+    } else if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().then(permission => {
+        if (permission === 'granted') {
+          testNotification();
+        }
+      });
+    }
+  };
+
   // Funções para atendimento
   const handleSelectConversation = (conversation) => {
     setSelectedConversation(conversation);
@@ -488,15 +554,80 @@ function App() {
           setInvalidNumbers(data.invalidNumbers);
         }
         
-        // Mostrar resumo
-        const successMessage = `Envio concluído! ${data.successful} enviados, ${data.failed} falharam.`;
-        setError(successMessage);
-        setTimeout(() => setError(''), 5000);
+        // Mostrar mensagem de sucesso na tela
+        setSuccessData({
+          successful: data.successful,
+          failed: data.failed,
+          total: phoneNumbers.length,
+          timestamp: new Date().toISOString()
+        });
+        setShowSuccessMessage(true);
+        
+        // Limpar mensagem de sucesso após 8 segundos
+        setTimeout(() => {
+          setShowSuccessMessage(false);
+          setSuccessData(null);
+        }, 8000);
+        
+        // Notificação do navegador
+        if ('Notification' in window && Notification.permission === 'granted') {
+          const notificationTitle = '✅ Disparo Concluído!';
+          const notificationBody = `${data.successful} mensagens enviadas com sucesso${data.failed > 0 ? `, ${data.failed} falharam` : ''}`;
+          
+          new Notification(notificationTitle, {
+            body: notificationBody,
+            icon: '/public/vite.svg',
+            badge: '/public/vite.svg',
+            tag: 'whatsapp-disparo',
+            requireInteraction: false,
+            silent: false,
+            data: {
+              successful: data.successful,
+              failed: data.failed,
+              total: phoneNumbers.length,
+              timestamp: new Date().toISOString()
+            }
+          });
+        }
+        
+        // Tocar som de notificação se disponível
+        try {
+          const audio = new Audio('/public/notification.mp3');
+          audio.play().catch(err => console.log('Erro ao tocar som:', err));
+        } catch (err) {
+          console.log('Erro ao carregar som de notificação:', err);
+        }
       } else {
-        setError(data.error || 'Erro ao enviar mensagens');
+        const errorMessage = data.error || 'Erro ao enviar mensagens';
+        setError(errorMessage);
+        
+        // Notificação de erro
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('❌ Erro no Disparo', {
+            body: errorMessage,
+            icon: '/public/vite.svg',
+            badge: '/public/vite.svg',
+            tag: 'whatsapp-disparo-erro',
+            requireInteraction: false,
+            silent: false
+          });
+        }
       }
     } catch (err) {
-      setError('Erro ao enviar mensagens: ' + err.message);
+      const errorMessage = 'Erro ao enviar mensagens: ' + err.message;
+      setError(errorMessage);
+      
+      // Notificação de erro de rede
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('❌ Erro de Conexão', {
+          body: errorMessage,
+          icon: '/public/vite.svg',
+          badge: '/public/vite.svg',
+          tag: 'whatsapp-disparo-erro-rede',
+          requireInteraction: false,
+          silent: false
+        });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -727,6 +858,11 @@ function App() {
     setIsAuthenticated(true);
     setCurrentUser(user);
     setAuthView('login');
+    
+    // Solicitar permissão de notificação
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
   };
 
   // Função de registro
@@ -866,6 +1002,116 @@ function App() {
           {error}
         </Alert>
       )}
+
+      {/* Mensagem de Sucesso do Disparo */}
+      <Slide direction="down" in={showSuccessMessage} mountOnEnter unmountOnExit>
+        <Box sx={{ mb: 3 }}>
+          <Paper
+            elevation={8}
+            sx={{
+              p: 3,
+              background: 'linear-gradient(135deg, #4caf50 0%, #45a049 100%)',
+              color: 'white',
+              borderRadius: 2,
+              position: 'relative',
+              overflow: 'hidden'
+            }}
+          >
+            {/* Efeito de brilho */}
+            <Box
+              sx={{
+                position: 'absolute',
+                top: 0,
+                left: '-100%',
+                width: '100%',
+                height: '100%',
+                background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent)',
+                animation: showSuccessMessage ? 'shine 2s ease-in-out' : 'none',
+                '@keyframes shine': {
+                  '0%': { left: '-100%' },
+                  '100%': { left: '100%' }
+                }
+              }}
+            />
+            
+            <Box display="flex" justifyContent="space-between" alignItems="flex-start">
+              <Box display="flex" flexDirection="column" gap={2} flex={1}>
+                <Box display="flex" alignItems="center" gap={2}>
+                  <Typography 
+                    variant="h4" 
+                    sx={{ 
+                      fontWeight: 'bold',
+                      textShadow: '2px 2px 4px rgba(0,0,0,0.3)'
+                    }}
+                  >
+                    🎉 Disparo concluído com sucesso!
+                  </Typography>
+                </Box>
+                
+                <Box display="flex" gap={2} flexWrap="wrap" alignItems="center">
+                  <Chip
+                    label={`✅ ${successData?.successful || 0} enviados`}
+                    sx={{
+                      backgroundColor: 'rgba(255,255,255,0.2)',
+                      color: 'white',
+                      border: '1px solid rgba(255,255,255,0.3)',
+                      fontWeight: 'bold'
+                    }}
+                    size="medium"
+                  />
+                  {successData?.failed > 0 && (
+                    <Chip
+                      label={`❌ ${successData.failed} falharam`}
+                      sx={{
+                        backgroundColor: 'rgba(255,255,255,0.2)',
+                        color: 'white',
+                        border: '1px solid rgba(255,255,255,0.3)',
+                        fontWeight: 'bold'
+                      }}
+                      size="medium"
+                    />
+                  )}
+                  <Chip
+                    label={`📊 Total: ${successData?.total || 0}`}
+                    sx={{
+                      backgroundColor: 'rgba(255,255,255,0.2)',
+                      color: 'white',
+                      border: '1px solid rgba(255,255,255,0.3)',
+                      fontWeight: 'bold'
+                    }}
+                    size="medium"
+                  />
+                </Box>
+                
+                <Typography 
+                  variant="body2" 
+                  sx={{ 
+                    opacity: 0.9,
+                    fontStyle: 'italic'
+                  }}
+                >
+                  Concluído em {successData?.timestamp ? new Date(successData.timestamp).toLocaleString('pt-BR') : ''}
+                </Typography>
+              </Box>
+              
+              <IconButton
+                onClick={() => {
+                  setShowSuccessMessage(false);
+                  setSuccessData(null);
+                }}
+                sx={{
+                  color: 'white',
+                  '&:hover': {
+                    backgroundColor: 'rgba(255,255,255,0.1)'
+                  }
+                }}
+              >
+                <CloseIcon />
+              </IconButton>
+            </Box>
+          </Paper>
+        </Box>
+      </Slide>
 
       {/* Interface de Atendimento */}
       {currentView === 'attendance' && (
@@ -1100,6 +1346,7 @@ function App() {
               {showChatwood ? 'Ocultar' : 'Mostrar'} Chatwood
             </Button>
           </Grid>
+       
         </Grid>
       </Paper>
 
