@@ -48,7 +48,9 @@ import {
   Support,
   Dashboard,
   Logout as LogoutIcon,
-  AccountCircle as AccountCircleIcon
+  AccountCircle as AccountCircleIcon,
+  Chat as ChatIcon,
+  Note as NoteIcon
 } from '@mui/icons-material';
 import { DataGrid } from '@mui/x-data-grid';
 import Papa from 'papaparse';
@@ -57,6 +59,9 @@ import AttendanceChat from './components/AttendanceChat';
 import Login from './components/Login';
 import Register from './components/Register';
 import UserManagement from './components/UserManagement';
+import NotificationSystem from './components/NotificationSystem';
+import CustomerNotes from './components/CustomerNotes';
+import InternalChat from './components/InternalChat';
 
 // URL da API backend
 const API_BASE_URL = 'http://localhost:3001/api';
@@ -88,8 +93,9 @@ function App() {
   const [socket, setSocket] = useState(null);
   
   // Estados para atendimento
-  const [currentView, setCurrentView] = useState('bulk'); // 'bulk', 'attendance', 'userManagement'
+  const [currentView, setCurrentView] = useState('bulk'); // 'bulk', 'attendance', 'userManagement', 'internalChat', 'customerNotes'
   const [selectedConversation, setSelectedConversation] = useState(null);
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
 
   // Estados de autenticação
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -774,6 +780,7 @@ function App() {
 
   return (
     <Container maxWidth="lg" sx={{ py: 4 }}>
+      <NotificationSystem />
       {/* Header com AppBar */}
       <AppBar position="static" sx={{ mb: 4 }}>
         <Toolbar>
@@ -812,7 +819,7 @@ function App() {
 
       {/* Navegação */}
       <Paper sx={{ p: 2, mb: 3 }}>
-        <Box display="flex" gap={2}>
+        <Box display="flex" gap={2} flexWrap="wrap">
           <Button
             variant={currentView === 'bulk' ? 'contained' : 'outlined'}
             startIcon={<SendIcon />}
@@ -828,12 +835,28 @@ function App() {
             Atendimento ao Cliente
           </Button>
           <Button
-            variant={currentView === 'userManagement' ? 'contained' : 'outlined'}
-            startIcon={<PersonIcon />}
-            onClick={() => setCurrentView('userManagement')}
+            variant={currentView === 'internalChat' ? 'contained' : 'outlined'}
+            startIcon={<ChatIcon />}
+            onClick={() => setCurrentView('internalChat')}
           >
-            Gerenciamento de Usuários
+            Chat Interno
           </Button>
+          <Button
+            variant={currentView === 'customerNotes' ? 'contained' : 'outlined'}
+            startIcon={<NoteIcon />}
+            onClick={() => setCurrentView('customerNotes')}
+          >
+            Observações
+          </Button>
+          {currentUser?.role === 'admin' && (
+            <Button
+              variant={currentView === 'userManagement' ? 'contained' : 'outlined'}
+              startIcon={<PersonIcon />}
+              onClick={() => setCurrentView('userManagement')}
+            >
+              Gerenciamento de Usuários
+            </Button>
+          )}
         </Box>
       </Paper>
 
@@ -876,6 +899,43 @@ function App() {
       {/* Interface de Gerenciamento de Usuários */}
       {currentView === 'userManagement' && currentUser?.role === 'admin' && (
         <UserManagement />
+      )}
+
+      {/* Interface de Chat Interno */}
+      {currentView === 'internalChat' && (
+        <InternalChat />
+      )}
+
+      {/* Interface de Observações de Clientes */}
+      {currentView === 'customerNotes' && (
+        <Box>
+          <Typography variant="h4" component="h2" gutterBottom align="center" color="primary">
+            <NoteIcon sx={{ mr: 2, fontSize: 'inherit' }} />
+            Observações de Clientes
+          </Typography>
+          
+          <Paper sx={{ p: 3, mb: 3 }}>
+            <Typography variant="h6" gutterBottom>
+              Selecione um cliente para ver suas observações
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Esta funcionalidade permite adicionar observações sobre clientes que ficam visíveis apenas para funcionários.
+            </Typography>
+          </Paper>
+          
+          {selectedCustomer ? (
+            <CustomerNotes 
+              customerId={selectedCustomer.id}
+              customerName={selectedCustomer.name || selectedCustomer.phone}
+            />
+          ) : (
+            <Box p={3} display="flex" justifyContent="center" alignItems="center" height="400px">
+              <Typography variant="h6" color="text.secondary" textAlign="center">
+                Para adicionar observações, vá para a tela de Atendimento ao Cliente e clique no ícone de observações durante uma conversa.
+              </Typography>
+            </Box>
+          )}
+        </Box>
       )}
 
       {/* Interface de Envio em Massa */}

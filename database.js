@@ -93,6 +93,27 @@ export const initDatabase = async () => {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
 
+      CREATE TABLE IF NOT EXISTS customer_notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        note TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (customer_id) REFERENCES customers(id),
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS internal_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_id INTEGER NOT NULL,
+        receiver_id INTEGER NOT NULL,
+        message TEXT NOT NULL,
+        is_read BOOLEAN DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (sender_id) REFERENCES users(id),
+        FOREIGN KEY (receiver_id) REFERENCES users(id)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
       CREATE INDEX IF NOT EXISTS idx_conversations_customer ON conversations(customer_id);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
@@ -100,6 +121,9 @@ export const initDatabase = async () => {
       CREATE INDEX IF NOT EXISTS idx_sessions_id ON whatsapp_sessions(session_id);
       CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+      CREATE INDEX IF NOT EXISTS idx_customer_notes_customer ON customer_notes(customer_id);
+      CREATE INDEX IF NOT EXISTS idx_internal_messages_sender ON internal_messages(sender_id);
+      CREATE INDEX IF NOT EXISTS idx_internal_messages_receiver ON internal_messages(receiver_id);
     `);
 
     console.log('Banco de dados inicializado com sucesso');
@@ -288,6 +312,7 @@ export const getCustomerHistory = async (customerId, limit = 100) => {
 // Funções para dashboard
 export const getDashboardStats = async () => {
   try {
+    console.log('[DB] Buscando estatísticas do dashboard...');
     const stats = await db.get(`
       SELECT 
         COUNT(DISTINCT c.id) as total_conversations,
@@ -299,6 +324,7 @@ export const getDashboardStats = async () => {
       LEFT JOIN messages m ON c.id = m.conversation_id
     `);
     
+    console.log('[DB] Estatísticas obtidas:', stats);
     return stats;
   } catch (error) {
     console.error('Erro ao buscar estatísticas:', error);
@@ -308,6 +334,7 @@ export const getDashboardStats = async () => {
 
 export const getRecentConversations = async (limit = 10, agentId = null) => {
   try {
+    console.log('[DB] Buscando conversas recentes, limite:', limit);
     let query = `
       SELECT 
         c.*,
@@ -337,7 +364,11 @@ export const getRecentConversations = async (limit = 10, agentId = null) => {
     query += ' GROUP BY c.id ORDER BY has_unread_messages DESC, MAX(m.timestamp) DESC, c.updated_at DESC LIMIT ?';
     params.push(limit);
     
-    return await db.all(query, params);
+    console.log('[DB] Executando query de conversas...');
+    const result = await db.all(query, params);
+    console.log('[DB] Conversas encontradas:', result.length);
+    
+    return result;
   } catch (error) {
     console.error('Erro ao buscar conversas recentes:', error);
     throw error;
@@ -701,13 +732,203 @@ export const getUnassignedConversations = async () => {
 export const getAvailableAgents = async () => {
   try {
     return await db.all(`
-      SELECT id, username, full_name, role, is_active
+      SELECT id, username, full_name, email, role, sector, is_active, last_login
       FROM users 
       WHERE (role = 'agent' OR role = 'admin') AND is_active = 1
       ORDER BY full_name
     `);
   } catch (error) {
     console.error('Erro ao buscar agentes disponíveis:', error);
+    throw error;
+  }
+};
+
+// Função para buscar mensagens novas desde um timestamp específico
+export const getNewMessagesSince = async (sinceDate) => {
+  try {
+    const conversations = await db.all(`
+      SELECT DISTINCT
+        c.id as conversation_id,
+        c.customer_id,
+        c.chat_id,
+        c.status,
+        cust.phone as customer_phone,
+        cust.name as customer_name,
+        MAX(m.timestamp) as last_message_time,
+        COUNT(m.id) as message_count,
+        SUM(CASE WHEN m.direction = 'inbound' AND m.timestamp > c.last_seen THEN 1 ELSE 0 END) as unread_count
+      FROM conversations c
+      JOIN customers cust ON c.customer_id = cust.id
+      LEFT JOIN messages m ON c.id = m.conversation_id
+      WHERE m.timestamp > ?
+      GROUP BY c.id, c.customer_id, c.chat_id, c.status, cust.phone, cust.name
+      ORDER BY last_message_time DESC
+    `, [sinceDate.toISOString()]);
+
+    return conversations.map(conv => ({
+      ...conv,
+      has_unread_messages: conv.unread_count > 0
+    }));
+  } catch (error) {
+    console.error('Erro ao buscar mensagens novas:', error);
+    throw error;
+  }
+};
+
+// ==================== FUNÇÕES PARA OBSERVAÇÕES DE CLIENTES ====================
+
+// Adicionar observação a um cliente
+export const addCustomerNote = async (customerId, userId, note) => {
+  try {
+    const result = await db.run(
+      'INSERT INTO customer_notes (customer_id, user_id, note) VALUES (?, ?, ?)',
+      [customerId, userId, note]
+    );
+    return { id: result.lastID };
+  } catch (error) {
+    console.error('Erro ao adicionar observação:', error);
+    throw error;
+  }
+};
+
+// Buscar observações de um cliente
+export const getCustomerNotes = async (customerId) => {
+  try {
+    return await db.all(`
+      SELECT cn.*, u.full_name as user_name, u.username
+      FROM customer_notes cn
+      JOIN users u ON cn.user_id = u.id
+      WHERE cn.customer_id = ?
+      ORDER BY cn.created_at DESC
+    `, [customerId]);
+  } catch (error) {
+    console.error('Erro ao buscar observações:', error);
+    throw error;
+  }
+};
+
+// Deletar observação
+export const deleteCustomerNote = async (noteId, userId) => {
+  try {
+    // Verificar se o usuário é o autor da observação ou admin
+    const note = await db.get('SELECT * FROM customer_notes WHERE id = ?', [noteId]);
+    if (!note) {
+      throw new Error('Observação não encontrada');
+    }
+    
+    const user = await getUserById(userId);
+    if (note.user_id !== userId && user.role !== 'admin') {
+      throw new Error('Sem permissão para deletar esta observação');
+    }
+    
+    await db.run('DELETE FROM customer_notes WHERE id = ?', [noteId]);
+    return true;
+  } catch (error) {
+    console.error('Erro ao deletar observação:', error);
+    throw error;
+  }
+};
+
+// ==================== FUNÇÕES PARA CHAT INTERNO ====================
+
+// Enviar mensagem interna
+export const sendInternalMessage = async (senderId, receiverId, message) => {
+  try {
+    const result = await db.run(
+      'INSERT INTO internal_messages (sender_id, receiver_id, message) VALUES (?, ?, ?)',
+      [senderId, receiverId, message]
+    );
+    return { id: result.lastID };
+  } catch (error) {
+    console.error('Erro ao enviar mensagem interna:', error);
+    throw error;
+  }
+};
+
+// Buscar mensagens entre dois usuários
+export const getInternalMessages = async (userId1, userId2, limit = 50) => {
+  try {
+    return await db.all(`
+      SELECT im.*, 
+             s.full_name as sender_name, s.username as sender_username,
+             r.full_name as receiver_name, r.username as receiver_username
+      FROM internal_messages im
+      JOIN users s ON im.sender_id = s.id
+      JOIN users r ON im.receiver_id = r.id
+      WHERE (im.sender_id = ? AND im.receiver_id = ?) 
+         OR (im.sender_id = ? AND im.receiver_id = ?)
+      ORDER BY im.created_at DESC
+      LIMIT ?
+    `, [userId1, userId2, userId2, userId1, limit]);
+  } catch (error) {
+    console.error('Erro ao buscar mensagens internas:', error);
+    throw error;
+  }
+};
+
+// Buscar conversas internas de um usuário
+export const getInternalConversations = async (userId) => {
+  try {
+    console.log('[DB] Buscando conversas internas para usuário:', userId);
+    const conversations = await db.all(`
+      SELECT DISTINCT
+        CASE 
+          WHEN im.sender_id = ? THEN im.receiver_id
+          ELSE im.sender_id
+        END as other_user_id,
+        CASE 
+          WHEN im.sender_id = ? THEN u2.full_name
+          ELSE u1.full_name
+        END as other_user_name,
+        CASE 
+          WHEN im.sender_id = ? THEN u2.username
+          ELSE u1.username
+        END as other_user_username,
+        MAX(im.created_at) as last_message_time,
+        COUNT(im.id) as message_count,
+        SUM(CASE WHEN im.receiver_id = ? AND im.is_read = 0 THEN 1 ELSE 0 END) as unread_count
+      FROM internal_messages im
+      JOIN users u1 ON im.sender_id = u1.id
+      JOIN users u2 ON im.receiver_id = u2.id
+      WHERE im.sender_id = ? OR im.receiver_id = ?
+      GROUP BY other_user_id, other_user_name, other_user_username
+      ORDER BY last_message_time DESC
+    `, [userId, userId, userId, userId, userId, userId]);
+    
+    console.log('[DB] Conversas internas encontradas:', conversations.length);
+    return conversations;
+  } catch (error) {
+    console.error('Erro ao buscar conversas internas:', error);
+    throw error;
+  }
+};
+
+// Marcar mensagens como lidas
+export const markInternalMessagesAsRead = async (senderId, receiverId) => {
+  try {
+    await db.run(
+      'UPDATE internal_messages SET is_read = 1 WHERE sender_id = ? AND receiver_id = ? AND is_read = 0',
+      [senderId, receiverId]
+    );
+    return true;
+  } catch (error) {
+    console.error('Erro ao marcar mensagens como lidas:', error);
+    throw error;
+  }
+};
+
+// Buscar mensagens não lidas de um usuário
+export const getUnreadInternalMessages = async (userId) => {
+  try {
+    return await db.all(`
+      SELECT im.*, u.full_name as sender_name, u.username as sender_username
+      FROM internal_messages im
+      JOIN users u ON im.sender_id = u.id
+      WHERE im.receiver_id = ? AND im.is_read = 0
+      ORDER BY im.created_at ASC
+    `, [userId]);
+  } catch (error) {
+    console.error('Erro ao buscar mensagens não lidas:', error);
     throw error;
   }
 };

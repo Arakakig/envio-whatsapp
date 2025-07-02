@@ -84,7 +84,7 @@ const httpServer = createServer(app);
 // Configurar Socket.IO
 const io = new Server(httpServer, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: ["http://localhost:5173", "http://localhost:5174"],
     methods: ["GET", "POST"]
   }
 });
@@ -107,13 +107,15 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB
+    fileSize: 10 * 1024 * 1024 // 10MB
   },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('audio/')) {
+    if (file.mimetype.startsWith('image/') || 
+        file.mimetype.startsWith('audio/') || 
+        file.mimetype === 'application/pdf') {
       cb(null, true);
     } else {
-      cb(new Error('Apenas imagens e áudios são permitidos'), false);
+      cb(new Error('Apenas imagens, áudios e PDFs são permitidos'), false);
     }
   }
 });
@@ -284,19 +286,100 @@ const createWhatsAppSession = async (sessionId, sessionName) => {
           conversation = await createConversation(customer.id, session.id, chatId);
         }
 
-        // Salvar mensagem
-        await saveMessage(conversation.id, customer.id, session.id, 'inbound', messageText, 'text', null, null);
-
-        // Emitir para o chatwood
-        io.emit('chatwood', {
-          type: 'message',
-          conversationId: conversation.id,
-          message: messageText,
-          from: chatId,
-          timestamp: new Date(new Date().getTime() - (4 * 60 * 60 * 1000)).toISOString()
-        });
-
-        console.log(`[${new Date().toLocaleTimeString()}] INFO: Mensagem recebida de ${chatId}: ${messageText}`);
+        // Salvar mensagem recebida (texto ou mídia)
+        let savedMessage;
+        if (message.hasMedia) {
+          try {
+            const media = await message.downloadMedia();
+            if (media && media.mimetype && media.data) {
+              console.log(`[DEBUG] Mídia recebida - mimetype: ${media.mimetype}, filename: ${media.filename || 'sem nome'}`);
+              
+              // Determinar tipo de mídia e extensão
+              let mediaType = 'file';
+              let filePrefix = 'file';
+              let ext = 'bin';
+              
+              // Verificar se é PDF por mimetype ou extensão do arquivo
+              if (media.mimetype === 'application/pdf' || 
+                  (media.filename && media.filename.toLowerCase().endsWith('.pdf'))) {
+                mediaType = 'pdf';
+                filePrefix = 'pdf';
+                ext = 'pdf';
+                console.log(`[DEBUG] Detectado como PDF`);
+              } else if (media.mimetype.startsWith('image/')) {
+                mediaType = 'image';
+                filePrefix = 'image';
+                ext = media.mimetype.split('/')[1] || 'jpg';
+                console.log(`[DEBUG] Detectado como imagem`);
+              } else if (media.mimetype.startsWith('audio/')) {
+                mediaType = 'audio';
+                filePrefix = 'audio';
+                ext = media.mimetype.split('/')[1] || 'bin';
+                console.log(`[DEBUG] Detectado como áudio`);
+              } else if (media.mimetype.startsWith('video/')) {
+                mediaType = 'video';
+                filePrefix = 'video';
+                ext = media.mimetype.split('/')[1] || 'bin';
+                console.log(`[DEBUG] Detectado como vídeo`);
+              } else {
+                // Outros tipos de arquivo
+                ext = media.mimetype.split('/')[1] || 'bin';
+                console.log(`[DEBUG] Detectado como arquivo genérico`);
+              }
+              
+              // Gerar nome de arquivo único
+              const filename = `${filePrefix}-${Date.now()}-${Math.floor(Math.random()*1e9)}.${ext}`;
+              const uploadPath = path.join(__dirname, 'uploads', filename);
+              
+              // Salvar arquivo
+              fs.writeFileSync(uploadPath, Buffer.from(media.data, 'base64'));
+              
+              // Salvar no banco
+              savedMessage = await saveMessage(
+                conversation.id,
+                customer.id,
+                session.id,
+                'inbound',
+                '', // Sem texto
+                mediaType,
+                `/uploads/${filename}`,
+                null
+              );
+              
+              // Emitir para o frontend
+              io.emit('chatwood', {
+                type: 'message',
+                conversationId: conversation.id,
+                message: '',
+                mediaType: mediaType,
+                mediaUrl: `/uploads/${filename}`,
+                fileName: filename,
+                from: chatId,
+                timestamp: new Date(new Date().getTime() - (4 * 60 * 60 * 1000)).toISOString()
+              });
+              
+              // Notificação será emitida pelo frontend quando detectar nova mensagem
+              
+              console.log(`[${new Date().toLocaleTimeString()}] INFO: ${mediaType} recebido de ${chatId}: ${filename}`);
+            }
+          } catch (mediaError) {
+            console.error('Erro ao salvar mídia recebida:', mediaError.message);
+          }
+        } else {
+          // Salvar mensagem de texto
+          savedMessage = await saveMessage(conversation.id, customer.id, session.id, 'inbound', messageText, 'text', null, null);
+          // Emitir para o frontend
+          io.emit('chatwood', {
+            type: 'message',
+            conversationId: conversation.id,
+            message: messageText,
+            from: chatId,
+            timestamp: new Date(new Date().getTime() - (4 * 60 * 60 * 1000)).toISOString()
+          });
+          
+          // Notificação será emitida pelo frontend quando detectar nova mensagem
+          console.log(`[${new Date().toLocaleTimeString()}] INFO: Mensagem recebida de ${chatId}: ${messageText}`);
+        }
       } catch (error) {
         console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao processar mensagem:`, error.message);
       }
@@ -363,8 +446,6 @@ const isAnySessionConnected = () => {
   return false;
 };
 
-// Função para enviar logs para o chatwood (removida para reduzir logs)
-
 // Função para validar e formatar número de telefone
 const validateAndFormatPhone = async (element) => {
   let shouldSend = true;
@@ -372,14 +453,12 @@ const validateAndFormatPhone = async (element) => {
   const invalidNumbers = [];
 
   try {
-    console.log('Iniciando validação para:', element);
 
     //---------------------------------------Verifica se o número é válido---------------------------------------
     // Verificar se o elemento tem phone ou number
     const phoneNumber = element.phone || element.number;
 
     if (!element || !phoneNumber || phoneNumber === '' || phoneNumber === undefined || phoneNumber === null) {
-      console.log('Número inválido:', element);
       return {
         shouldSend: false,
         numberUser: '',
@@ -389,7 +468,6 @@ const validateAndFormatPhone = async (element) => {
 
     //---------------------------------------Remove caracteres especiais e atualiza o ddd------------------------
     numberUser = phoneNumber.replace(/\D/g, '');
-    console.log('Número após remoção de caracteres especiais:', numberUser);
 
     if (numberUser.length < 8) {
       shouldSend = false;
@@ -403,13 +481,11 @@ const validateAndFormatPhone = async (element) => {
     //---------------------------------------Se não tiver DDD, adiciona 67----------------------------------------
     if (numberUser.length < 10) {
       numberUser = "67" + numberUser;
-      console.log('Adicionado DDD 67:', numberUser);
     }
 
     //---------------------------------------Se tiver o 9 inicial de todos os números, retira----------------------------------------
     if (numberUser.length === 11 && numberUser[2] === '9') {
       numberUser = numberUser.slice(0, 2) + numberUser.slice(3);
-      console.log('Removido 9 inicial:', numberUser);
     }
 
     // Verificação adicional para números que começam com 3
@@ -934,10 +1010,18 @@ app.post('/api/admin/merge-conversations', async (req, res) => {
 // Dashboard - Estatísticas
 app.get('/api/attendance/dashboard', async (req, res) => {
   try {
+    console.log('[DASHBOARD] Iniciando busca de dados...');
+    
+    console.log('[DASHBOARD] Buscando estatísticas...');
     const stats = await getDashboardStats();
+    console.log('[DASHBOARD] Estatísticas obtidas:', stats);
+    
+    console.log('[DASHBOARD] Buscando conversas recentes...');
     let recentConversations = await getRecentConversations(50);
+    console.log('[DASHBOARD] Conversas encontradas:', recentConversations.length);
 
     // Determinar o tipo de chat baseado no customer_phone e chat_id
+    console.log('[DASHBOARD] Processando tipos de chat...');
     recentConversations = recentConversations.map(conv => {
       const phone = conv.customer_phone || '';
       const chatId = conv.chat_id || '';
@@ -960,52 +1044,70 @@ app.get('/api/attendance/dashboard', async (req, res) => {
       };
     });
 
-    // Buscar fotos de perfil e nomes dos contatos
+    // Buscar fotos de perfil e nomes dos contatos (de forma mais robusta)
+    console.log('[DASHBOARD] Verificando cliente atual...');
     const currentClient = getCurrentClient();
     if (currentClient) {
-      const conversationsWithProfile = await Promise.all(recentConversations.map(async (conv) => {
+      console.log('[DASHBOARD] Cliente conectado, buscando fotos de perfil...');
+      
+      // Processar conversas uma por vez para evitar travamentos
+      const conversationsWithProfile = [];
+      for (const conv of recentConversations) {
         try {
           let profilePicture = null;
-          let contactName = null;
+          let contactName = conv.customer_name || null;
+          
           // Buscar foto e nome apenas para conversas privadas
-          if (conv.chat_type === 'private') {
-            const chatId = conv.customer_phone;
-
+          if (conv.chat_type === 'private' && conv.customer_phone) {
             try {
-              // Usar a nova função para obter informações completas do contato
-              const contactInfo = await getContactInfo(currentClient, chatId);
-              console.log(contactInfo)
+              // Usar timeout para evitar travamentos
+              const contactInfo = await Promise.race([
+                getContactInfo(currentClient, conv.customer_phone),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
+              ]);
+              
               profilePicture = contactInfo.profilePicture;
-              contactName = contactInfo.contactName;
+              contactName = contactInfo.contactName || contactName;
             } catch (picError) {
-              // Silenciar erros de foto/nome não encontrados
+              console.log(`[DASHBOARD] Erro ao buscar foto para ${conv.customer_phone}:`, picError.message);
               profilePicture = null;
-              contactName = null;
             }
           }
 
-          return {
+          conversationsWithProfile.push({
             ...conv,
             profilePicture,
             contactName
-          };
+          });
         } catch (error) {
-          return {
+          console.log(`[DASHBOARD] Erro ao processar conversa ${conv.id}:`, error.message);
+          conversationsWithProfile.push({
             ...conv,
             profilePicture: null,
-            contactName: null
-          };
+            contactName: conv.customer_name || null
+          });
         }
-      }));
+      }
 
       recentConversations = conversationsWithProfile;
+      console.log('[DASHBOARD] Fotos de perfil processadas');
+    } else {
+      console.log('[DASHBOARD] Cliente não conectado, pulando fotos de perfil');
+      // Adicionar campos vazios para manter compatibilidade
+      recentConversations = recentConversations.map(conv => ({
+        ...conv,
+        profilePicture: null,
+        contactName: conv.customer_name || null
+      }));
     }
 
+    console.log('[DASHBOARD] Enviando resposta...');
     res.json({
       success: true,
       stats,
       recentConversations
     });
+    console.log('[DASHBOARD] Resposta enviada com sucesso');
   } catch (error) {
     console.error('Erro ao buscar dashboard:', error);
     res.status(500).json({ error: error.message });
@@ -1269,7 +1371,8 @@ app.delete('/api/sessions/:sessionId', async (req, res) => {
 // Enviar mensagem de atendimento
 app.post('/api/attendance/send-message', upload.fields([
   { name: 'image', maxCount: 1 },
-  { name: 'audio', maxCount: 1 }
+  { name: 'audio', maxCount: 1 },
+  { name: 'pdf', maxCount: 1 }
 ]), async (req, res) => {
   try {
     const { conversationId, message, customerPhone, chatId } = req.body;
@@ -1301,7 +1404,7 @@ app.post('/api/attendance/send-message', upload.fields([
     let mediaPath = null;
     let media = null;
 
-    if (req.files && (req.files.image || req.files.audio)) {
+    if (req.files && (req.files.image || req.files.audio || req.files.pdf)) {
       if (req.files.image) {
         const imageFile = req.files.image[0];
         mediaPath = imageFile.path;
@@ -1316,6 +1419,12 @@ app.post('/api/attendance/send-message', upload.fields([
 
         // Enviar áudio sem configurações extras que podem causar problemas
         await currentClient.sendMessage(toChatId, media, { sendAudioAsVoice: true });
+      } else if (req.files.pdf) {
+        const pdfFile = req.files.pdf[0];
+        mediaPath = pdfFile.path;
+        media = MessageMedia.fromFilePath(mediaPath);
+        mediaType = 'pdf';
+        await currentClient.sendMessage(toChatId, media, { caption: messageWithId });
       }
 
       // Salvar no banco
@@ -1412,10 +1521,31 @@ app.post('/api/attendance/send-message', upload.fields([
 
 // Chatwood - logs em tempo real
 io.on('connection', (socket) => {
-  console.log(`[${new Date().toLocaleTimeString()}] SYSTEM: Cliente conectado ao chatwood`);
-
+  console.log(`[SOCKET.IO] Cliente conectado: ${socket.id}`);
+  
   socket.on('disconnect', () => {
-    console.log(`[${new Date().toLocaleTimeString()}] SYSTEM: Cliente desconectado do chatwood`);
+    console.log(`[SOCKET.IO] Cliente desconectado: ${socket.id}`);
+  });
+  
+  socket.on('test-notification', (data) => {
+    console.log(`[SOCKET.IO] Evento de teste recebido de ${socket.id}:`, data);
+    // Responder com uma notificação de teste
+    const testNotification = {
+      type: 'new-message',
+      conversationId: 999,
+      from: 'TESTE',
+      message: 'Notificação de teste do servidor',
+      timestamp: new Date().toISOString()
+    };
+    console.log(`[SOCKET.IO] Enviando notificação de teste para ${socket.id}`);
+    socket.emit('new-notification', testNotification);
+  });
+  
+  socket.on('new-notification', (notificationData) => {
+    console.log(`[SOCKET.IO] Notificação recebida de ${socket.id}:`, notificationData);
+    // Reemitir para todos os clientes (incluindo o NotificationSystem)
+    console.log(`[SOCKET.IO] Reemitindo notificação para todos os sockets:`, io.sockets.sockets.size);
+    io.sockets.emit('new-notification', notificationData);
   });
 });
 

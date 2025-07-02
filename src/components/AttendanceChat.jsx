@@ -33,9 +33,13 @@ import {
   PlayArrow,
   Pause,
   Audiotrack,
-  Close
+  Close,
+  PictureAsPdf,
+  Download,
+  Note
 } from '@mui/icons-material';
 import { io } from 'socket.io-client';
+import CustomerNotes from './CustomerNotes';
 
 const AttendanceChat = ({ conversation, onBack }) => {
   const [messages, setMessages] = useState([]);
@@ -45,6 +49,7 @@ const AttendanceChat = ({ conversation, onBack }) => {
   const [newMessage, setNewMessage] = useState('');
   const [imageFile, setImageFile] = useState(null);
   const [audioFile, setAudioFile] = useState(null);
+  const [pdfFile, setPdfFile] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [audioBlob, setAudioBlob] = useState(null);
@@ -55,9 +60,11 @@ const AttendanceChat = ({ conversation, onBack }) => {
   const [socket, setSocket] = useState(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [microphoneError, setMicrophoneError] = useState('');
+  const [showNotes, setShowNotes] = useState(false);
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const audioInputRef = useRef(null);
+  const pdfInputRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioRef = useRef(null);
   const recordingIntervalRef = useRef(null);
@@ -144,7 +151,7 @@ const AttendanceChat = ({ conversation, onBack }) => {
   };
 
   const handleSendMessage = async () => {
-    if (!newMessage.trim() && !imageFile && !audioFile) return;
+    if (!newMessage.trim() && !imageFile && !audioFile && !pdfFile) return;
     
     const messageToSend = newMessage.trim();
     const tempId = Date.now(); // ID temporário para feedback instantâneo
@@ -163,6 +170,7 @@ const AttendanceChat = ({ conversation, onBack }) => {
     setNewMessage('');
     setImageFile(null);
     setAudioFile(null);
+    setPdfFile(null);
     setSending(true);
     
     // Scroll para baixo imediatamente
@@ -181,6 +189,10 @@ const AttendanceChat = ({ conversation, onBack }) => {
       
       if (audioFile) {
         formData.append('audio', audioFile);
+      }
+      
+      if (pdfFile) {
+        formData.append('pdf', pdfFile);
       }
       
       const response = await fetch('http://localhost:3001/api/attendance/send-message', {
@@ -273,6 +285,13 @@ const AttendanceChat = ({ conversation, onBack }) => {
       // Para outros formatos, tentar converter ou usar como está
       // O WhatsApp Web.js geralmente aceita MP3, WAV, M4A também
       setAudioFile(file);
+    }
+  };
+
+  const handlePdfSelect = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      setPdfFile(file);
     }
   };
 
@@ -404,6 +423,12 @@ const AttendanceChat = ({ conversation, onBack }) => {
     }
   };
 
+  const handleDownloadFile = (mediaUrl, fileName) => {
+    // Abrir em nova guia
+    const fullUrl = mediaUrl.startsWith('http') ? mediaUrl : `http://localhost:3001${mediaUrl}`;
+    window.open(fullUrl, '_blank');
+  };
+
   if (!conversation) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
@@ -411,8 +436,6 @@ const AttendanceChat = ({ conversation, onBack }) => {
       </Box>
     );
   }
-  console.log(conversation)
-
   return (
     <Box height="100%" display="flex" flexDirection="column">
       {/* Notificações de erro */}
@@ -453,6 +476,13 @@ const AttendanceChat = ({ conversation, onBack }) => {
               {conversation?.agent_name}
             </Typography>
           </Box>
+          <IconButton
+            onClick={() => setShowNotes(!showNotes)}
+            title="Ver observações do cliente"
+            color={showNotes ? 'primary' : 'default'}
+          >
+            <Note />
+          </IconButton>
           <Chip
             icon={<WhatsApp />}
             label={conversation.status === 'open' ? 'Aberta' : 'Fechada'}
@@ -460,6 +490,16 @@ const AttendanceChat = ({ conversation, onBack }) => {
           />
         </Box>
       </Paper>
+
+      {/* Observações do Cliente */}
+      {showNotes && (
+        <Paper sx={{ p: 2, mb: 2 }}>
+          <CustomerNotes 
+            customerId={conversation.customer_id}
+            customerName={conversation.contactName || conversation.customer_phone || 'Cliente'}
+          />
+        </Paper>
+      )}
 
       {/* Mensagens */}
       <Paper sx={{ flex: 1, mb: 2, overflow: 'hidden' }}>
@@ -497,20 +537,50 @@ const AttendanceChat = ({ conversation, onBack }) => {
                         mb: 1
                       }}
                     >
-                      <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
-                        {message.content}
-                      </Typography>
-                      
-                      {message.media_url && (
-                        <Box mt={1}>
+                      {/* Exibir imagem se for do tipo image */}
+                      {((message.message_type === 'image' || message.mediaType === 'image') && (message.media_url || message.mediaUrl)) ? (
+                        <Box mt={1} mb={message.content ? 1 : 0}>
                           <img
-                            src={message.media_url}
-                            alt="Mídia"
+                            src={message.media_url || message.mediaUrl}
+                            alt="Imagem recebida"
                             style={{ maxWidth: '100%', borderRadius: 8 }}
                           />
                         </Box>
-                      )}
+                      ) : null}
                       
+                      {/* Exibir PDF se for do tipo pdf */}
+                      {((message.message_type === 'pdf' || message.mediaType === 'pdf') && (message.media_url || message.mediaUrl)) ? (
+                        <Box 
+                          mt={1} 
+                          mb={message.content ? 1 : 0}
+                          sx={{
+                            border: '1px solid',
+                            borderColor: 'divider',
+                            borderRadius: 1,
+                            p: 1,
+                            backgroundColor: 'background.paper'
+                          }}
+                        >
+                          <Box display="flex" alignItems="center" gap={1}>
+                            <PictureAsPdf color="error" />
+                            <Typography variant="body2" sx={{ flex: 1 }}>
+                              {message.fileName || 'Documento PDF'}
+                            </Typography>
+                            <IconButton
+                              size="small"
+                              onClick={() => handleDownloadFile(message.media_url || message.mediaUrl, message.fileName)}
+                              title="Abrir PDF em nova guia"
+                            >
+                              <Download fontSize="small" />
+                            </IconButton>
+                          </Box>
+                        </Box>
+                      ) : null}
+                      {message.content && (
+                        <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
+                          {message.content}
+                        </Typography>
+                      )}
                       <Box display="flex" alignItems="center" gap={1} mt={1}>
                         <AccessTime fontSize="small" />
                         <Typography variant="caption">
@@ -567,6 +637,14 @@ const AttendanceChat = ({ conversation, onBack }) => {
             <Audiotrack />
           </IconButton>
           
+          <IconButton
+            onClick={() => pdfInputRef.current?.click()}
+            disabled={sending}
+            title="Anexar PDF"
+          >
+            <PictureAsPdf />
+          </IconButton>
+          
           {!isRecording ? (
             <IconButton
               onClick={startRecording}
@@ -609,7 +687,7 @@ const AttendanceChat = ({ conversation, onBack }) => {
           
           <IconButton
             onClick={handleSendMessage}
-            disabled={(!newMessage.trim() && !imageFile && !audioFile) || sending}
+            disabled={(!newMessage.trim() && !imageFile && !audioFile && !pdfFile) || sending}
             color="primary"
           >
             {sending ? <CircularProgress size={24} /> : <Send />}
@@ -650,6 +728,12 @@ const AttendanceChat = ({ conversation, onBack }) => {
           </Alert>
         )}
         
+        {pdfFile && (
+          <Alert severity="info" sx={{ mt: 1 }} onClose={() => setPdfFile(null)}>
+            PDF selecionado: {pdfFile.name}
+          </Alert>
+        )}
+        
         {isRecording && (
           <Alert severity="warning" sx={{ mt: 1 }} onClose={() => {}}>
             Gravando áudio... {formatTime(recordingTime)}
@@ -672,6 +756,15 @@ const AttendanceChat = ({ conversation, onBack }) => {
         type="file"
         accept="audio/*"
         onChange={handleAudioSelect}
+        style={{ display: 'none' }}
+      />
+      
+      {/* Input de PDF oculto */}
+      <input
+        ref={pdfInputRef}
+        type="file"
+        accept=".pdf,application/pdf"
+        onChange={handlePdfSelect}
         style={{ display: 'none' }}
       />
 
