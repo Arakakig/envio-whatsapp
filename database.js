@@ -99,6 +99,7 @@ export const initDatabase = async () => {
         user_id INTEGER NOT NULL,
         note TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (customer_id) REFERENCES customers(id),
         FOREIGN KEY (user_id) REFERENCES users(id)
       );
@@ -792,17 +793,43 @@ export const addCustomerNote = async (customerId, userId, note) => {
 };
 
 // Buscar observações de um cliente
-export const getCustomerNotes = async (customerId) => {
+export const getCustomerNotes = async (customerId, noteId = null) => {
   try {
-    return await db.all(`
-      SELECT cn.*, u.full_name as user_name, u.username
-      FROM customer_notes cn
-      JOIN users u ON cn.user_id = u.id
-      WHERE cn.customer_id = ?
-      ORDER BY cn.created_at DESC
-    `, [customerId]);
+    if (noteId) {
+      // Buscar uma observação específica
+      return await db.all(`
+        SELECT cn.*, u.full_name as user_name, u.username
+        FROM customer_notes cn
+        JOIN users u ON cn.user_id = u.id
+        WHERE cn.id = ?
+        ORDER BY cn.created_at DESC
+      `, [noteId]);
+    } else {
+      // Buscar todas as observações de um cliente
+      return await db.all(`
+        SELECT cn.*, u.full_name as user_name, u.username
+        FROM customer_notes cn
+        JOIN users u ON cn.user_id = u.id
+        WHERE cn.customer_id = ?
+        ORDER BY cn.created_at DESC
+      `, [customerId]);
+    }
   } catch (error) {
     console.error('Erro ao buscar observações:', error);
+    throw error;
+  }
+};
+
+// Atualizar observação
+export const updateCustomerNote = async (noteId, note) => {
+  try {
+    const result = await db.run(
+      'UPDATE customer_notes SET note = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [note, noteId]
+    );
+    return result.changes > 0;
+  } catch (error) {
+    console.error('Erro ao atualizar observação:', error);
     throw error;
   }
 };

@@ -40,7 +40,11 @@ import {
   unassignConversation,
   getConversationsByAgent,
   getUnassignedConversations,
-  getAvailableAgents
+  getAvailableAgents,
+  addCustomerNote,
+  getCustomerNotes,
+  updateCustomerNote,
+  deleteCustomerNote
 } from './database.js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
@@ -2203,6 +2207,145 @@ app.get('/api/attendance/contacts/:phone/profile-picture', async (req, res) => {
   } catch (error) {
     console.error('Erro ao buscar foto de perfil:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== ROTAS PARA OBSERVAÇÕES DE CLIENTES ====================
+
+// Buscar observações de um cliente
+app.get('/api/customers/:customerId/notes', authenticateToken, async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    
+    if (!customerId) {
+      return res.status(400).json({ error: 'ID do cliente é obrigatório' });
+    }
+
+    const notes = await getCustomerNotes(customerId);
+    
+    res.json({
+      success: true,
+      notes: notes
+    });
+
+  } catch (error) {
+    console.error('Erro ao buscar observações do cliente:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Adicionar nova observação
+app.post('/api/customers/:customerId/notes', authenticateToken, async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { note } = req.body;
+    const userId = req.user.id;
+
+    if (!customerId) {
+      return res.status(400).json({ error: 'ID do cliente é obrigatório' });
+    }
+
+    if (!note || !note.trim()) {
+      return res.status(400).json({ error: 'Observação é obrigatória' });
+    }
+
+    const noteId = await addCustomerNote(customerId, userId, note.trim());
+    
+    if (noteId) {
+      res.json({
+        success: true,
+        message: 'Observação adicionada com sucesso',
+        noteId: noteId
+      });
+    } else {
+      res.status(500).json({ error: 'Erro ao adicionar observação' });
+    }
+
+  } catch (error) {
+    console.error('Erro ao adicionar observação:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Editar observação
+app.put('/api/customers/notes/:noteId', authenticateToken, async (req, res) => {
+  try {
+    const { noteId } = req.params;
+    const { note } = req.body;
+    const userId = req.user.id;
+
+    if (!noteId) {
+      return res.status(400).json({ error: 'ID da observação é obrigatório' });
+    }
+
+    if (!note || !note.trim()) {
+      return res.status(400).json({ error: 'Observação é obrigatória' });
+    }
+
+    // Primeiro, buscar a observação para verificar se existe e se o usuário pode editá-la
+    const notes = await getCustomerNotes(null, noteId);
+    if (!notes || notes.length === 0) {
+      return res.status(404).json({ error: 'Observação não encontrada' });
+    }
+
+    const targetNote = notes[0];
+    if (targetNote.user_id !== userId && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Você não tem permissão para editar esta observação' });
+    }
+
+    // Atualizar a observação
+    const success = await updateCustomerNote(noteId, note.trim());
+    
+    if (success) {
+      res.json({
+        success: true,
+        message: 'Observação atualizada com sucesso'
+      });
+    } else {
+      res.status(500).json({ error: 'Erro ao atualizar observação' });
+    }
+
+  } catch (error) {
+    console.error('Erro ao editar observação:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Deletar observação
+app.delete('/api/customers/notes/:noteId', authenticateToken, async (req, res) => {
+  try {
+    const { noteId } = req.params;
+    const userId = req.user.id;
+
+    if (!noteId) {
+      return res.status(400).json({ error: 'ID da observação é obrigatório' });
+    }
+
+    // Primeiro, buscar a observação para verificar se existe e se o usuário pode deletá-la
+    const notes = await getCustomerNotes(null, noteId);
+    if (!notes || notes.length === 0) {
+      return res.status(404).json({ error: 'Observação não encontrada' });
+    }
+
+    const targetNote = notes[0];
+    if (targetNote.user_id !== userId && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Você não tem permissão para deletar esta observação' });
+    }
+
+    const success = await deleteCustomerNote(noteId, userId);
+    
+    if (success) {
+      res.json({
+        success: true,
+        message: 'Observação deletada com sucesso'
+      });
+    } else {
+      res.status(500).json({ error: 'Erro ao deletar observação' });
+    }
+
+  } catch (error) {
+    console.error('Erro ao deletar observação:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });
 

@@ -1300,10 +1300,13 @@ function App() {
           
           <Paper sx={{ p: 3, mb: 3 }}>
             <Typography variant="h6" gutterBottom>
-              Selecione um cliente para ver suas observações
+              Gerenciamento de Observações de Clientes
+            </Typography>
+            <Typography variant="body2" color="text.secondary" paragraph>
+              Esta funcionalidade permite adicionar, editar e visualizar observações sobre clientes que ficam visíveis apenas para funcionários.
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Esta funcionalidade permite adicionar observações sobre clientes que ficam visíveis apenas para funcionários.
+              <strong>Como usar:</strong> Vá para a tela de Atendimento ao Cliente, selecione uma conversa e clique no ícone de observações para gerenciar as observações do cliente.
             </Typography>
           </Paper>
           
@@ -1313,10 +1316,28 @@ function App() {
               customerName={selectedCustomer.name || selectedCustomer.phone}
             />
           ) : (
-            <Box p={3} display="flex" justifyContent="center" alignItems="center" height="400px">
-              <Typography variant="h6" color="text.secondary" textAlign="center">
-                Para adicionar observações, vá para a tela de Atendimento ao Cliente e clique no ícone de observações durante uma conversa.
+            <Box p={4} display="flex" flexDirection="column" justifyContent="center" alignItems="center" minHeight="400px">
+              <NoteIcon sx={{ fontSize: 64, color: 'text.secondary', mb: 2 }} />
+              <Typography variant="h6" color="text.secondary" textAlign="center" gutterBottom>
+                Nenhum cliente selecionado
               </Typography>
+              <Typography variant="body2" color="text.secondary" textAlign="center" paragraph>
+                Para gerenciar observações de um cliente:
+              </Typography>
+              <Box component="ol" sx={{ textAlign: 'left', color: 'text.secondary' }}>
+                <Typography component="li" variant="body2" sx={{ mb: 1 }}>
+                  Vá para a tela de <strong>Atendimento ao Cliente</strong>
+                </Typography>
+                <Typography component="li" variant="body2" sx={{ mb: 1 }}>
+                  Selecione uma conversa na lista à esquerda
+                </Typography>
+                <Typography component="li" variant="body2" sx={{ mb: 1 }}>
+                  Clique no ícone de observações (📝) durante a conversa
+                </Typography>
+                <Typography component="li" variant="body2">
+                  Adicione, edite ou visualize as observações do cliente
+                </Typography>
+              </Box>
             </Box>
           )}
         </Box>
