@@ -293,13 +293,34 @@ const createWhatsAppSession = async (sessionId, sessionName) => {
           return;
         }
 
+        // Obter informações do remetente
+        let senderName = null;
+        let senderPhone = null;
+        
+        try {
+          if (isGroup) {
+            // Para grupos, obter informações do participante que enviou a mensagem
+            const contact = await client.getContactById(message.author || message.from);
+            senderName = contact?.pushname || contact?.name || null;
+            senderPhone = message.author || null;
+          } else {
+            // Para conversas privadas, obter informações do contato
+            const contact = await client.getContactById(message.from);
+            senderName = contact?.pushname || contact?.name || null;
+            senderPhone = message.from;
+          }
+        } catch (contactError) {
+          console.log('Erro ao obter informações do contato:', contactError.message);
+          // Continuar sem as informações do contato
+        }
+
         // Buscar ou criar cliente
         const customer = await createOrUpdateCustomer(chatId);
 
         // Buscar conversa ativa
         let conversation = await getActiveConversation(customer.id, chatId);
         if (!conversation) {
-          conversation = await createConversation(customer.id, session.id, chatId);
+          conversation = await createConversation(customer.id, session.id, chatId, isGroup ? 'group' : 'private');
         }
 
         // Salvar mensagem recebida (texto ou mídia)
@@ -359,7 +380,9 @@ const createWhatsAppSession = async (sessionId, sessionName) => {
                 '', // Sem texto
                 mediaType,
                 `/uploads/${filename}`,
-                null
+                null,
+                senderName,
+                senderPhone
               );
               
               // Emitir para o frontend
@@ -371,30 +394,34 @@ const createWhatsAppSession = async (sessionId, sessionName) => {
                 mediaUrl: `/uploads/${filename}`,
                 fileName: filename,
                 from: chatId,
+                senderName: senderName,
+                senderPhone: senderPhone,
                 timestamp: new Date(new Date().getTime() - (4 * 60 * 60 * 1000)).toISOString()
               });
               
               // Notificação será emitida pelo frontend quando detectar nova mensagem
               
-              console.log(`[${new Date().toLocaleTimeString()}] INFO: ${mediaType} recebido de ${chatId}: ${filename}`);
+              console.log(`[${new Date().toLocaleTimeString()}] INFO: ${mediaType} recebido de ${senderName || chatId}: ${filename}`);
             }
           } catch (mediaError) {
             console.error('Erro ao salvar mídia recebida:', mediaError.message);
           }
         } else {
           // Salvar mensagem de texto
-          savedMessage = await saveMessage(conversation.id, customer.id, session.id, 'inbound', messageText, 'text', null, null);
+          savedMessage = await saveMessage(conversation.id, customer.id, session.id, 'inbound', messageText, 'text', null, null, senderName, senderPhone);
           // Emitir para o frontend
           io.emit('chatwood', {
             type: 'message',
             conversationId: conversation.id,
             message: messageText,
             from: chatId,
+            senderName: senderName,
+            senderPhone: senderPhone,
             timestamp: new Date(new Date().getTime() - (4 * 60 * 60 * 1000)).toISOString()
           });
           
           // Notificação será emitida pelo frontend quando detectar nova mensagem
-          console.log(`[${new Date().toLocaleTimeString()}] INFO: Mensagem recebida de ${chatId}: ${messageText}`);
+          console.log(`[${new Date().toLocaleTimeString()}] INFO: Mensagem recebida de ${senderName || chatId}: ${messageText}`);
         }
       } catch (error) {
         console.error(`[${new Date().toLocaleTimeString()}] ERROR: Erro ao processar mensagem:`, error.message);
@@ -1489,6 +1516,9 @@ app.post('/api/attendance/send-message', upload.fields([
         messageWithId,
         mediaType,
         mediaPath,
+        null,
+        'Atendente', // Nome do remetente (atendente)
+        null // Telefone do remetente (não aplicável para atendentes)
       );
 
       // Limpar arquivo
@@ -1514,6 +1544,9 @@ app.post('/api/attendance/send-message', upload.fields([
         messageWithId,
         'text',
         null,
+        null,
+        'Atendente', // Nome do remetente (atendente)
+        null // Telefone do remetente (não aplicável para atendentes)
       );
     }
 

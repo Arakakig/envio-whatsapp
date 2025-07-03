@@ -270,15 +270,15 @@ export const mergeDuplicateConversations = async () => {
 };
 
 // Funções para gerenciar mensagens
-export const saveMessage = async (conversationId, customerId, sessionId, direction, content, messageType = 'text', mediaUrl = null, messageId = null) => {
+export const saveMessage = async (conversationId, customerId, sessionId, direction, content, messageType = 'text', mediaUrl = null, messageId = null, senderName = null, senderPhone = null) => {
   try {
     // Criar timestamp no fuso horário local (GMT-4 - Campo Grande)
     const now = new Date();
     const localTimestamp = new Date(now.getTime() - (4 * 60 * 60 * 1000)).toISOString();
     
     const result = await db.run(
-      'INSERT INTO messages (conversation_id, customer_id, session_id, direction, content, message_type, media_url, message_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [conversationId, customerId, sessionId, direction, content, messageType, mediaUrl, messageId, localTimestamp]
+      'INSERT INTO messages (conversation_id, customer_id, session_id, direction, content, message_type, media_url, message_id, timestamp, sender_name, sender_phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [conversationId, customerId, sessionId, direction, content, messageType, mediaUrl, messageId, localTimestamp, senderName, senderPhone]
     );
     return { id: result.lastID };
   } catch (error) {

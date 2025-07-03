@@ -474,14 +474,22 @@ const AttendanceChat = ({ conversation, onBack }) => {
           </Avatar>
           <Box flex={1}>
             <Typography variant="h6">
-              {conversation.contactName || conversation.customer_phone || 'Cliente'}
+              {conversation.chat_type === 'group' 
+                ? (conversation.chat_name || 'Grupo') 
+                : (conversation.contactName || conversation.customer_phone || 'Cliente')
+              }
             </Typography>
             <Typography variant="body2" color="text.secondary">
               {conversation.customer_phone}
+              {conversation.chat_type === 'group' && (
+                <span> • Grupo</span>
+              )}
             </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {conversation?.agent_name}
-            </Typography>
+            {conversation.assigned_agent_name && (
+              <Typography variant="body2" color="text.secondary">
+                Atendente: {conversation.assigned_agent_name}
+              </Typography>
+            )}
           </Box>
           <IconButton
             onClick={() => setShowNotes(!showNotes)}
@@ -544,6 +552,32 @@ const AttendanceChat = ({ conversation, onBack }) => {
                         mb: 1
                       }}
                     >
+                      {/* Mostrar remetente em grupos */}
+                      {conversation.chat_type === 'group' && message.direction === 'inbound' && (
+                        <Box mb={1}>
+                          <Typography 
+                            variant="caption" 
+                            sx={{ 
+                              fontWeight: 'bold',
+                              color: message.direction === 'outbound' ? 'white' : 'primary.main'
+                            }}
+                          >
+                            {message.sender_name || message.sender_phone || 'Membro do grupo'}
+                          </Typography>
+                          {message.sender_phone && (
+                            <Typography 
+                              variant="caption" 
+                              sx={{ 
+                                display: 'block',
+                                color: message.direction === 'outbound' ? 'rgba(255,255,255,0.7)' : 'text.secondary'
+                              }}
+                            >
+                              {message.sender_phone}
+                            </Typography>
+                          )}
+                        </Box>
+                      )}
+                      
                       {/* Exibir imagem se for do tipo image */}
                       {((message.message_type === 'image' || message.mediaType === 'image') && (message.media_url || message.mediaUrl)) ? (
                         <Box mt={1} mb={message.content ? 1 : 0}>
