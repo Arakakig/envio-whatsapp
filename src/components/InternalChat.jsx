@@ -1,9 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
+import { io } from 'socket.io-client';
 import {
   Box,
   Typography,
-  TextField,
-  Button,
   List,
   ListItem,
   ListItemText,
@@ -11,254 +10,172 @@ import {
   Avatar,
   Paper,
   Divider,
-  Alert,
-  Chip,
-  Badge,
+  TextField,
+  Button,
+  CircularProgress,
   IconButton,
-  Drawer,
-  AppBar,
-  Toolbar,
-  ListItemButton
+  Chip,
+  Badge
 } from '@mui/material';
-import {
-  Send,
-  Person,
-  Chat,
-  Close,
-  ArrowBack
-} from '@mui/icons-material';
-import { io } from 'socket.io-client';
+import { Send, Person, Refresh, Notifications } from '@mui/icons-material';
+import { useNotifications } from '../contexts/NotificationContext';
+
+const API_BASE_URL = 'http://localhost:3001/api';
 
 const InternalChat = () => {
-  const [conversations, setConversations] = useState([]);
-  const [selectedConversation, setSelectedConversation] = useState(null);
+  const { currentUser, unreadCounts, clearUnreadCount } = useNotifications();
+  const [users, setUsers] = useState([]);
+  const [selectedUser, setSelectedUser] = useState(null);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [currentUser, setCurrentUser] = useState(null);
-  const socketRef = useRef(null);
   const messagesEndRef = useRef(null);
 
-  // Buscar usuário atual
-  useEffect(() => {
-    const userData = localStorage.getItem('user');
-    if (userData) {
-      setCurrentUser(JSON.parse(userData));
-    }
-  }, []);
-
-  // Conectar ao socket
-  useEffect(() => {
-    socketRef.current = io('http://localhost:3001');
-    
-    // Escutar mensagens internas
-    socketRef.current.on('internal-message', (messageData) => {
-      console.log('[INTERNAL CHAT] Nova mensagem recebida:', messageData);
-      
-      // Adicionar mensagem se for da conversa atual
-      if (selectedConversation && 
-          (messageData.senderId === selectedConversation.other_user_id || 
-           messageData.receiverId === selectedConversation.other_user_id)) {
-        setMessages(prev => [...prev, messageData]);
-      }
-      
-      // Atualizar lista de conversas
-      fetchConversations();
-    });
-
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
-    };
-  }, [selectedConversation]);
-
-  // Buscar conversas
-  const fetchConversations = async () => {
+  // Buscar lista de usuários
+  const fetchUsers = async () => {
+    setLoadingUsers(true);
+    setError('');
     try {
-      setLoading(true);
       const token = localStorage.getItem('token');
-      console.log('[INTERNAL CHAT] Buscando conversas...');
-      const response = await fetch('http://localhost:3001/api/internal/conversations', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const response = await fetch(`${API_BASE_URL}/internal/users`, {
+        headers: { 'Authorization': `Bearer ${token}` }
       });
-      
-      console.log('[INTERNAL CHAT] Resposta da API:', response.status);
       const data = await response.json();
-      console.log('[INTERNAL CHAT] Dados recebidos:', data);
-      
       if (data.success) {
-        setConversations(data.conversations);
+        setUsers(data.users);
       } else {
-        setError('Erro ao carregar conversas');
+        setError(data.error || 'Erro ao buscar usuários');
       }
-    } catch (error) {
-      console.error('Erro ao buscar conversas:', error);
-      setError('Erro ao carregar conversas');
+    } catch (err) {
+      setError('Erro ao buscar usuários: ' + err.message);
     } finally {
-      setLoading(false);
+      setLoadingUsers(false);
     }
   };
 
-  // Buscar mensagens de uma conversa
-  const fetchMessages = async (otherUserId) => {
+  // Buscar mensagens com usuário selecionado
+  const fetchMessages = async (userId) => {
+    setLoadingMessages(true);
+    setError('');
     try {
-      setLoading(true);
       const token = localStorage.getItem('token');
-      const response = await fetch(`http://localhost:3001/api/internal/messages/${otherUserId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+      const response = await fetch(`${API_BASE_URL}/internal/messages/${userId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
       });
-      
       const data = await response.json();
       if (data.success) {
-        setMessages(data.messages);
+        setMessages(data.messages.reverse()); // ordem cronológica
       } else {
-        setError('Erro ao carregar mensagens');
+        setError(data.error || 'Erro ao buscar mensagens');
       }
-    } catch (error) {
-      console.error('Erro ao buscar mensagens:', error);
-      setError('Erro ao carregar mensagens');
+    } catch (err) {
+      setError('Erro ao buscar mensagens: ' + err.message);
     } finally {
-      setLoading(false);
+      setLoadingMessages(false);
     }
-  };
-
-  // Selecionar conversa
-  const handleSelectConversation = (conversation) => {
-    setSelectedConversation(conversation);
-    fetchMessages(conversation.other_user_id);
-    setDrawerOpen(false);
   };
 
   // Enviar mensagem
-  const handleSendMessage = async () => {
-    if (!newMessage.trim() || !selectedConversation) return;
-
+  const handleSend = async () => {
+    if (!newMessage.trim() || !selectedUser) return;
+    setSending(true);
+    setError('');
     try {
-      setLoading(true);
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:3001/api/internal/messages', {
+      const response = await fetch(`${API_BASE_URL}/internal/messages/${selectedUser.id}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({
-          receiverId: selectedConversation.other_user_id,
-          message: newMessage.trim()
-        })
+        body: JSON.stringify({ message: newMessage.trim() })
       });
-
       const data = await response.json();
       if (data.success) {
+        // Adicionar mensagem localmente para feedback imediato
+        const newMessageData = {
+          id: data.id,
+          sender_id: currentUser.id,
+          receiver_id: selectedUser.id,
+          message: newMessage.trim(),
+          created_at: new Date().toISOString(),
+          sender_name: currentUser.full_name || currentUser.username,
+          receiver_name: selectedUser.full_name || selectedUser.username
+        };
+        
+        setMessages(prev => [...prev, newMessageData]);
         setNewMessage('');
-        // A mensagem será adicionada via socket
       } else {
         setError(data.error || 'Erro ao enviar mensagem');
       }
-    } catch (error) {
-      console.error('Erro ao enviar mensagem:', error);
-      setError('Erro ao enviar mensagem');
+    } catch (err) {
+      setError('Erro ao enviar mensagem: ' + err.message);
     } finally {
-      setLoading(false);
+      setSending(false);
     }
   };
 
-  // Formatar data
-  const formatDate = (dateString) => {
-    const date = new Date(dateString);
-    return date.toLocaleString('pt-BR', {
-      day: '2-digit',
-      month: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
-
-  // Auto-scroll para última mensagem
+  // Scroll para o final das mensagens
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages]);
 
-  // Carregar conversas iniciais
+  // Buscar usuários ao montar
   useEffect(() => {
-    fetchConversations();
+    fetchUsers();
   }, []);
 
+  // Buscar mensagens ao selecionar usuário
+  useEffect(() => {
+    if (selectedUser) {
+      fetchMessages(selectedUser.id);
+      // Limpar contador de mensagens não lidas ao abrir conversa
+      clearUnreadCount(selectedUser.id);
+    } else {
+      setMessages([]);
+    }
+  }, [selectedUser]);
+
   return (
-    <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-      {/* Header */}
-      <AppBar position="static" color="primary">
-        <Toolbar>
-          <IconButton
-            edge="start"
-            color="inherit"
-            onClick={() => setDrawerOpen(true)}
-            sx={{ mr: 2 }}
-          >
-            <Chat />
+    <Box>
+      <Box display="flex" height="70vh" minHeight={400}>
+      {/* Lista de usuários */}
+      <Paper sx={{ width: 300, mr: 2, p: 0, display: 'flex', flexDirection: 'column' }}>
+        <Box p={2} display="flex" alignItems="center" justifyContent="space-between">
+          <Typography variant="h6">Usuários</Typography>
+          <IconButton onClick={fetchUsers} disabled={loadingUsers} size="small">
+            <Refresh />
           </IconButton>
-          <Typography variant="h6" sx={{ flexGrow: 1 }}>
-            Chat Interno
-          </Typography>
-          {selectedConversation && (
-            <Typography variant="body2">
-              {selectedConversation.other_user_name}
-            </Typography>
-          )}
-        </Toolbar>
-      </AppBar>
-
-      {error && (
-        <Alert severity="error" onClose={() => setError('')}>
-          {error}
-        </Alert>
-      )}
-
-      <Box sx={{ flex: 1, display: 'flex' }}>
-        {/* Lista de conversas (drawer) */}
-        <Drawer
-          anchor="left"
-          open={drawerOpen}
-          onClose={() => setDrawerOpen(false)}
-          sx={{
-            '& .MuiDrawer-paper': {
-              width: 300,
-              boxSizing: 'border-box',
-            },
-          }}
-        >
-          <Box sx={{ p: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              Conversas
-            </Typography>
+        </Box>
+        <Divider />
+        {loadingUsers ? (
+          <Box display="flex" justifyContent="center" alignItems="center" flex={1} py={4}>
+            <CircularProgress />
           </Box>
-          <List>
-            {conversations.length === 0 ? (
+        ) : (
+          <List dense sx={{ flex: 1, overflowY: 'auto' }}>
+            {users.length === 0 ? (
               <ListItem>
-                <ListItemText
-                  primary="Nenhuma conversa encontrada"
-                  secondary="Inicie uma conversa com outro funcionário"
-                />
+                <ListItemText primary="Nenhum usuário encontrado" />
               </ListItem>
             ) : (
-              conversations.map((conversation) => (
-                <ListItemButton
-                  key={conversation.other_user_id}
-                  onClick={() => handleSelectConversation(conversation)}
-                  selected={selectedConversation?.other_user_id === conversation.other_user_id}
+              users.map(user => (
+                <ListItem
+                  key={user.id}
+                  button
+                  selected={selectedUser && selectedUser.id === user.id}
+                  onClick={() => setSelectedUser(user)}
                 >
                   <ListItemAvatar>
                     <Badge
-                      badgeContent={conversation.unread_count}
+                      badgeContent={unreadCounts[user.id] || 0}
                       color="error"
-                      invisible={conversation.unread_count === 0}
+                      invisible={!unreadCounts[user.id]}
                     >
                       <Avatar>
                         <Person />
@@ -266,101 +183,121 @@ const InternalChat = () => {
                     </Badge>
                   </ListItemAvatar>
                   <ListItemText
-                    primary={conversation.other_user_name}
-                    secondary={
-                      <Box>
-                        <Typography variant="body2" noWrap>
-                          {conversation.message_count} mensagens
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {formatDate(conversation.last_message_time)}
-                        </Typography>
-                      </Box>
-                    }
+                    primary={user.full_name || user.username}
+                    secondary={user.role}
                   />
-                </ListItemButton>
+                  {user.role === 'admin' && (
+                    <Chip label="Admin" size="small" color="primary" />
+                  )}
+                </ListItem>
               ))
             )}
           </List>
-        </Drawer>
+        )}
+      </Paper>
 
-        {/* Área de chat */}
-        <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-          {selectedConversation ? (
+      {/* Área de mensagens */}
+      <Paper sx={{ flex: 1, p: 0, display: 'flex', flexDirection: 'column' }}>
+        <Box p={2} borderBottom="1px solid #eee" display="flex" alignItems="center" gap={2}>
+          {selectedUser ? (
             <>
-              {/* Mensagens */}
-              <Box sx={{ flex: 1, overflow: 'auto', p: 2 }}>
-                <List>
-                  {messages.map((message, index) => (
-                    <ListItem
-                      key={message.id || index}
-                      sx={{
-                        justifyContent: message.senderId === currentUser?.id ? 'flex-end' : 'flex-start'
-                      }}
-                    >
-                      <Paper
-                        sx={{
-                          p: 1,
-                          maxWidth: '70%',
-                          backgroundColor: message.senderId === currentUser?.id ? 'primary.main' : 'grey.100',
-                          color: message.senderId === currentUser?.id ? 'white' : 'text.primary'
-                        }}
-                      >
-                        <Typography variant="body2">
-                          {message.message}
-                        </Typography>
-                        <Typography variant="caption" sx={{ opacity: 0.7 }}>
-                          {formatDate(message.created_at || message.timestamp)}
-                        </Typography>
-                      </Paper>
-                    </ListItem>
-                  ))}
-                  <div ref={messagesEndRef} />
-                </List>
-              </Box>
-
-              {/* Input de mensagem */}
-              <Box sx={{ p: 2, borderTop: 1, borderColor: 'divider' }}>
-                <Box display="flex" gap={1}>
-                  <TextField
-                    fullWidth
-                    placeholder="Digite sua mensagem..."
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                    disabled={loading}
-                  />
-                  <Button
-                    variant="contained"
-                    onClick={handleSendMessage}
-                    disabled={!newMessage.trim() || loading}
-                  >
-                    <Send />
-                  </Button>
-                </Box>
+              <Avatar>
+                <Person />
+              </Avatar>
+              <Box>
+                <Typography variant="h6">
+                  {selectedUser.full_name || selectedUser.username}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {selectedUser.role}
+                </Typography>
               </Box>
             </>
           ) : (
-            <Box
-              sx={{
-                flex: 1,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexDirection: 'column',
-                gap: 2
-              }}
-            >
-              <Chat sx={{ fontSize: 64, color: 'grey.400' }} />
-              <Typography variant="h6" color="text.secondary">
-                Selecione uma conversa
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Escolha um funcionário para iniciar o chat
-              </Typography>
-            </Box>
+            <Typography variant="h6" color="text.secondary">
+              Selecione um usuário para conversar
+            </Typography>
           )}
         </Box>
+        <Divider />
+        <Box flex={1} p={2} overflow="auto" display="flex" flexDirection="column">
+          {loadingMessages ? (
+            <Box display="flex" justifyContent="center" alignItems="center" flex={1}>
+              <CircularProgress />
+            </Box>
+          ) : selectedUser ? (
+            messages.length === 0 ? (
+              <Typography color="text.secondary" textAlign="center" mt={4}>
+                Nenhuma mensagem ainda
+              </Typography>
+            ) : (
+              messages.map((msg, idx) => (
+                <Box
+                  key={msg.id || idx}
+                  display="flex"
+                  flexDirection="column"
+                  alignItems={msg.sender_id === selectedUser.id ? 'flex-start' : 'flex-end'}
+                  mb={2}
+                >
+                  <Paper
+                    sx={{
+                      p: 1.5,
+                      backgroundColor: msg.sender_id === selectedUser.id ? 'grey.100' : 'primary.main',
+                      color: msg.sender_id === selectedUser.id ? 'text.primary' : 'white',
+                      borderRadius: 2,
+                      maxWidth: 400
+                    }}
+                  >
+                    <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
+                      {msg.message}
+                    </Typography>
+                  </Paper>
+                  <Typography variant="caption" color="text.secondary" mt={0.5}>
+                    {new Date(msg.created_at).toLocaleString('pt-BR')}
+                  </Typography>
+                </Box>
+              ))
+            )
+          ) : null}
+          <div ref={messagesEndRef} />
+        </Box>
+        {/* Input de mensagem */}
+        {selectedUser && (
+          <Box p={2} borderTop="1px solid #eee" display="flex" gap={1} alignItems="flex-end">
+            <TextField
+              fullWidth
+              multiline
+              maxRows={4}
+              value={newMessage}
+              onChange={e => setNewMessage(e.target.value)}
+              onKeyPress={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+              placeholder="Digite sua mensagem..."
+              disabled={sending}
+              size="small"
+            />
+            <Button
+              variant="contained"
+              color="primary"
+              endIcon={<Send />}
+              onClick={handleSend}
+              disabled={sending || !newMessage.trim()}
+              sx={{ minWidth: 48, minHeight: 48 }}
+            >
+              Enviar
+            </Button>
+          </Box>
+        )}
+        {error && (
+          <Box p={2}>
+            <Typography color="error">{error}</Typography>
+          </Box>
+        )}
+      </Paper>
       </Box>
     </Box>
   );

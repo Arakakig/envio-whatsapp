@@ -511,13 +511,12 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
   useEffect(() => {
     socketRef.current = io('http://localhost:3001');
     
-    // Escutar novas mensagens
+    // Escutar novas mensagens (apenas para atualizar a lista, notificações são gerenciadas pelo contexto global)
     socketRef.current.on('chatwood', (data) => {
       if (data.type === 'message') {
         console.log('[DASHBOARD] Nova mensagem recebida via socket:', data);
         // Atualizar apenas a conversa específica
         updateConversationWithNewMessage(data.conversationId, data);
-        // Não emitir notificação aqui!
       }
     });
 

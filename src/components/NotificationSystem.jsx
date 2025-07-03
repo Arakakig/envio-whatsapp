@@ -64,55 +64,7 @@ const NotificationSystem = () => {
     };
   }, []);
 
-  // Função para buscar apenas mensagens novas
-  const checkNewMessages = async () => {
-    try {
-      const response = await fetch(`http://localhost:3001/api/attendance/new-messages?since=${lastCheckTime.current}`);
-      const data = await response.json();
-      
-      if (data.success && data.newMessages.length > 0) {
-        console.log(`[NOTIFICATION] ${data.newMessages.length} conversas com mensagens novas detectadas`);
-        
-        // Emitir notificação para cada conversa com mensagens novas
-        data.newMessages.forEach(conv => {
-          if (conv.has_unread_messages && socketRef.current && socketRef.current.connected) {
-            const notificationData = {
-              type: 'new-message',
-              conversationId: conv.conversation_id,
-              from: conv.customer_phone || conv.chat_id,
-              message: `Nova mensagem de ${conv.customer_name || 'Cliente'}`,
-              timestamp: new Date().toISOString()
-            };
-            console.log('[NOTIFICATION] Emitindo notificação:', notificationData);
-            socketRef.current.emit('new-notification', notificationData);
-          }
-        });
-      }
-      
-      // Atualizar timestamp da última verificação
-      lastCheckTime.current = data.timestamp || new Date().toISOString();
-    } catch (error) {
-      console.error('[NOTIFICATION] Erro ao verificar mensagens novas:', error);
-    }
-  };
 
-  // Verificar mensagens novas periodicamente (mais leve que antes)
-  useEffect(() => {
-    // Primeira verificação após 5 segundos
-    const initialCheck = setTimeout(() => {
-      checkNewMessages();
-    }, 5000);
-    
-    // Verificar a cada 30 segundos (mais eficiente)
-    const interval = setInterval(() => {
-      checkNewMessages();
-    }, 30000);
-
-    return () => {
-      clearTimeout(initialCheck);
-      clearInterval(interval);
-    };
-  }, []);
 
   const playNotificationSound = () => {
     console.log('[FRONTEND] Tocando som de notificação');

@@ -44,7 +44,9 @@ import {
   addCustomerNote,
   getCustomerNotes,
   updateCustomerNote,
-  deleteCustomerNote
+  deleteCustomerNote,
+  sendInternalMessage,
+  getInternalMessages
 } from './database.js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
@@ -88,8 +90,9 @@ const httpServer = createServer(app);
 // Configurar Socket.IO
 const io = new Server(httpServer, {
   cors: {
-    origin: ["http://localhost:5173", "http://localhost:5174"],
-    methods: ["GET", "POST"]
+    origin: ["http://localhost:5173", "http://localhost:5174", "null"],
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
@@ -130,7 +133,10 @@ if (!fs.existsSync(path.join(__dirname, 'uploads'))) {
 }
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ["http://localhost:5173", "http://localhost:5174", "null"],
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.static('public'));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -2345,6 +2351,67 @@ app.delete('/api/customers/notes/:noteId', authenticateToken, async (req, res) =
 
   } catch (error) {
     console.error('Erro ao deletar observação:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// ==================== ROTAS PARA CHAT INTERNO ENTRE USUÁRIOS ====================
+
+// Listar todos os usuários (exceto o próprio)
+app.get('/api/internal/users', authenticateToken, async (req, res) => {
+  try {
+    const users = await getAllUsers();
+    const filtered = users.filter(u => u.id !== req.user.id && u.is_active);
+    res.json({ success: true, users: filtered });
+  } catch (error) {
+    console.error('Erro ao listar usuários para chat interno:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Buscar mensagens entre o usuário autenticado e outro usuário
+app.get('/api/internal/messages/:userId', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const messages = await getInternalMessages(req.user.id, userId, 100);
+    res.json({ success: true, messages });
+  } catch (error) {
+    console.error('Erro ao buscar mensagens internas:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Enviar mensagem interna
+app.post('/api/internal/messages/:userId', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { message } = req.body;
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: 'Mensagem não pode ser vazia' });
+    }
+    const result = await sendInternalMessage(req.user.id, userId, message.trim());
+    
+    // Emitir evento WebSocket para notificar o destinatário
+    const sender = await getUserById(req.user.id);
+    const receiver = await getUserById(userId);
+    
+    if (sender && receiver) {
+      io.emit('internal-message', {
+        id: result.id,
+        sender_id: req.user.id,
+        receiver_id: userId,
+        message: message.trim(),
+        created_at: new Date().toISOString(),
+        sender_name: sender.full_name || sender.username,
+        receiver_name: receiver.full_name || receiver.username
+      });
+      
+      console.log(`[INTERNAL CHAT] Mensagem enviada de ${sender.full_name || sender.username} para ${receiver.full_name || receiver.username}`);
+    }
+    
+    res.json({ success: true, id: result.id });
+  } catch (error) {
+    console.error('Erro ao enviar mensagem interna:', error);
     res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });

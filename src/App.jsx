@@ -63,9 +63,11 @@ import AttendanceChat from './components/AttendanceChat';
 import Login from './components/Login';
 import Register from './components/Register';
 import UserManagement from './components/UserManagement';
-import NotificationSystem from './components/NotificationSystem';
+
 import CustomerNotes from './components/CustomerNotes';
 import InternalChat from './components/InternalChat';
+import { NotificationProvider } from './contexts/NotificationContext';
+import NotificationBadge from './components/NotificationBadge';
 
 // URL da API backend
 const API_BASE_URL = 'http://localhost:3001/api';
@@ -1031,8 +1033,8 @@ function App() {
   }
 
   return (
-    <Container maxWidth="lg" sx={{ py: 4 }}>
-      <NotificationSystem />
+    <NotificationProvider>
+      <Container maxWidth="lg" sx={{ py: 4 }}>
       {/* Header com AppBar */}
       <AppBar position="static" sx={{ mb: 4 }}>
         <Toolbar>
@@ -1042,6 +1044,7 @@ function App() {
           
           {/* Menu do usuário */}
           <Box display="flex" alignItems="center" gap={2}>
+            <NotificationBadge onClick={() => setCurrentView('internalChat')} />
             <Typography variant="body2" color="inherit">
               Olá, {currentUser?.full_name || currentUser?.username}
             </Typography>
@@ -2065,6 +2068,7 @@ function App() {
         </Box>
       )}
     </Container>
+    </NotificationProvider>
   );
 }
 

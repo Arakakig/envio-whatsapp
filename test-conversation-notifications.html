@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste - Notificações de Conversas</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background-color: #fafafa;
+        }
+        .test-section h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        .log {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 10px 0;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 9999;
+        }
+        .toast {
+            min-width: 300px;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            animation: slideIn 0.3s ease-out;
+            cursor: pointer;
+            font-family: Arial, sans-serif;
+        }
+        .toast.message {
+            background-color: #e3f2fd;
+            border: 1px solid #2196f3;
+            color: #1565c0;
+        }
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        .form-group {
+            margin: 15px 0;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        textarea {
+            height: 80px;
+            resize: vertical;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>💬 Teste - Notificações de Conversas</h1>
+        <p>Este teste simula mensagens de conversas do WhatsApp para verificar as notificações globais.</p>
+
+        <div class="test-section">
+            <h3>📋 Status do Sistema</h3>
+            <div id="status-container">
+                <div class="status info">Carregando status...</div>
+            </div>
+        </div>
+
+        <div class="test-section">
+            <h3>🧪 Simular Mensagem de Conversa</h3>
+            <div class="form-group">
+                <label for="conversationId">ID da Conversa:</label>
+                <input type="number" id="conversationId" value="6" placeholder="Ex: 6">
+            </div>
+            <div class="form-group">
+                <label for="customerPhone">Telefone do Cliente:</label>
+                <input type="text" id="customerPhone" value="556733017757@c.us" placeholder="Ex: 556733017757@c.us">
+            </div>
+            <div class="form-group">
+                <label for="messageText">Mensagem:</label>
+                <textarea id="messageText" placeholder="Digite a mensagem do cliente...">Olá! Preciso de ajuda com meu pedido.</textarea>
+            </div>
+            <button onclick="simulateConversationMessage()">Simular Mensagem de Conversa</button>
+            <button onclick="simulateRandomMessage()">Mensagem Aleatória</button>
+        </div>
+
+        <div class="test-section">
+            <h3>🧪 Simular Mensagem Interna</h3>
+            <div class="form-group">
+                <label for="senderName">Nome do Remetente:</label>
+                <input type="text" id="senderName" value="João Silva" placeholder="Ex: João Silva">
+            </div>
+            <div class="form-group">
+                <label for="internalMessage">Mensagem Interna:</label>
+                <textarea id="internalMessage" placeholder="Digite a mensagem interna...">Você pode me ajudar com essa conversa?</textarea>
+            </div>
+            <button onclick="simulateInternalMessage()">Simular Mensagem Interna</button>
+        </div>
+
+        <div class="test-section">
+            <h3>📊 Logs de Debug</h3>
+            <div class="log" id="debug-log">
+                Iniciando logs de debug...
+            </div>
+            <button onclick="clearLog()">Limpar Logs</button>
+        </div>
+
+        <div class="test-section">
+            <h3>📱 Verificação de Notificações</h3>
+            <p>Após simular uma mensagem, verifique se aparecem:</p>
+            <ul>
+                <li>✅ Toast no canto superior direito</li>
+                <li>✅ Som de notificação (beep)</li>
+                <li>✅ Título da página alterado</li>
+                <li>✅ Notificação do navegador (se permitido)</li>
+            </ul>
+            <button onclick="testAllNotifications()">Testar Todas as Notificações</button>
+        </div>
+    </div>
+
+    <!-- Container para toasts -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        let socket = null;
+        let originalTitle = null;
+        let titleTimeout = null;
+
+        // Função para adicionar log
+        function addLog(message, type = 'info') {
+            const log = document.getElementById('debug-log');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = `[${timestamp}] ${message}\n`;
+            log.textContent += logEntry;
+            log.scrollTop = log.scrollHeight;
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+
+        // Função para limpar log
+        function clearLog() {
+            document.getElementById('debug-log').textContent = 'Logs limpos...\n';
+        }
+
+        // Função para atualizar status
+        function updateStatus(message, type = 'info') {
+            const container = document.getElementById('status-container');
+            container.innerHTML = `<div class="status ${type}">${message}</div>`;
+        }
+
+        // Função para tocar beep de notificação
+        function playNotificationBeep() {
+            try {
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+                gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.01);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+                
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.3);
+                
+                addLog('Beep de notificação tocado com sucesso', 'success');
+                return true;
+            } catch (error) {
+                addLog(`Erro ao tocar beep: ${error.message}`, 'error');
+                return false;
+            }
+        }
+
+        // Função para mostrar toast
+        function showToast(type, title, message, duration = 5000) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `
+                <div style="flex: 1;">
+                    <div style="font-weight: bold; margin-bottom: 4px; font-size: 14px;">${title}</div>
+                    <div style="font-size: 13px; line-height: 1.4;">${message}</div>
+                </div>
+                <button onclick="this.parentElement.remove()" style="background: none; border: none; font-size: 18px; cursor: pointer; opacity: 0.6; padding: 0; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;">×</button>
+            `;
+            
+            container.appendChild(toast);
+            
+            setTimeout(() => {
+                if (toast.parentElement) {
+                    toast.remove();
+                }
+            }, duration);
+            
+            addLog(`Toast mostrado: ${title} - ${message}`, 'success');
+        }
+
+        // Função para notificar no título
+        function notifyInTitle(message) {
+            if (!originalTitle) {
+                originalTitle = document.title;
+            }
+            
+            if (titleTimeout) {
+                clearTimeout(titleTimeout);
+            }
+            
+            const notificationTitle = `🔔 ${message}`;
+            document.title = notificationTitle;
+            
+            titleTimeout = setTimeout(() => {
+                document.title = originalTitle;
+            }, 3000);
+            
+            addLog(`Título da página atualizado: ${notificationTitle}`, 'success');
+        }
+
+        // Simular mensagem de conversa
+        function simulateConversationMessage() {
+            const conversationId = document.getElementById('conversationId').value;
+            const customerPhone = document.getElementById('customerPhone').value;
+            const messageText = document.getElementById('messageText').value;
+            
+            if (!conversationId || !customerPhone || !messageText) {
+                addLog('Preencha todos os campos', 'error');
+                return;
+            }
+            
+            const mockMessage = {
+                type: 'message',
+                conversationId: parseInt(conversationId),
+                message: messageText,
+                from: customerPhone,
+                timestamp: new Date().toISOString()
+            };
+            
+            addLog(`Simulando mensagem de conversa: ${JSON.stringify(mockMessage)}`, 'info');
+            
+            if (socket && socket.connected) {
+                socket.emit('chatwood', mockMessage);
+                addLog('Mensagem de conversa simulada enviada via WebSocket', 'success');
+            } else {
+                addLog('WebSocket não conectado, simulando localmente', 'info');
+                processConversationMessage(mockMessage);
+            }
+        }
+
+        // Simular mensagem interna
+        function simulateInternalMessage() {
+            const senderName = document.getElementById('senderName').value;
+            const messageText = document.getElementById('internalMessage').value;
+            
+            if (!senderName || !messageText) {
+                addLog('Preencha todos os campos', 'error');
+                return;
+            }
+            
+            const mockMessage = {
+                id: Date.now(),
+                sender_id: 2,
+                receiver_id: 1,
+                message: messageText,
+                created_at: new Date().toISOString(),
+                sender_name: senderName,
+                receiver_name: 'Usuário Atual'
+            };
+            
+            addLog(`Simulando mensagem interna: ${JSON.stringify(mockMessage)}`, 'info');
+            
+            if (socket && socket.connected) {
+                socket.emit('internal-message', mockMessage);
+                addLog('Mensagem interna simulada enviada via WebSocket', 'success');
+            } else {
+                addLog('WebSocket não conectado, simulando localmente', 'info');
+                processInternalMessage(mockMessage);
+            }
+        }
+
+        // Simular mensagem aleatória
+        function simulateRandomMessage() {
+            const messages = [
+                'Olá! Preciso de ajuda',
+                'Quando meu pedido chega?',
+                'Tem desconto para pagamento à vista?',
+                'Quero cancelar minha compra',
+                'O produto está disponível?',
+                'Qual o prazo de entrega?',
+                'Posso trocar o produto?',
+                'Fiz o pagamento, confirma?'
+            ];
+            
+            const randomMessage = messages[Math.floor(Math.random() * messages.length)];
+            document.getElementById('messageText').value = randomMessage;
+            
+            simulateConversationMessage();
+        }
+
+        // Processar mensagem de conversa localmente
+        function processConversationMessage(data) {
+            const customerName = data.from.split('@')[0] || 'Cliente';
+            
+            // Simular notificações como na aplicação real
+            notifyInTitle(`${customerName}: ${data.message}`);
+            playNotificationBeep();
+            showToast('message', 'Nova Mensagem de Cliente', `${customerName}: ${data.message}`);
+            
+            if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('Nova Mensagem de Cliente', {
+                    body: `${customerName}: ${data.message}`,
+                    icon: 'http://localhost:3001/vite.svg',
+                    badge: 'http://localhost:3001/vite.svg',
+                    tag: 'conversation-message'
+                });
+            }
+        }
+
+        // Processar mensagem interna localmente
+        function processInternalMessage(messageData) {
+            notifyInTitle(`${messageData.sender_name}: ${messageData.message}`);
+            playNotificationBeep();
+            showToast('message', 'Nova Mensagem Interna', `${messageData.sender_name}: ${messageData.message}`);
+            
+            if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('Nova Mensagem Interna', {
+                    body: `${messageData.sender_name}: ${messageData.message}`,
+                    icon: 'http://localhost:3001/vite.svg',
+                    badge: 'http://localhost:3001/vite.svg',
+                    tag: 'internal-message'
+                });
+            }
+        }
+
+        // Testar todas as notificações
+        function testAllNotifications() {
+            addLog('Iniciando teste completo de notificações...', 'info');
+            
+            // Teste 1: Toast
+            setTimeout(() => {
+                showToast('message', 'Teste de Toast', 'Esta é uma notificação de teste');
+            }, 1000);
+            
+            // Teste 2: Som
+            setTimeout(() => {
+                playNotificationBeep();
+            }, 2000);
+            
+            // Teste 3: Título
+            setTimeout(() => {
+                notifyInTitle('Teste de Notificação no Título');
+            }, 3000);
+            
+            // Teste 4: Notificação do navegador
+            setTimeout(() => {
+                if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification('Teste de Notificação', {
+                        body: 'Esta é uma notificação de teste do navegador',
+                        icon: 'http://localhost:3001/vite.svg'
+                    });
+                }
+            }, 4000);
+        }
+
+        // Inicialização
+        document.addEventListener('DOMContentLoaded', function() {
+            addLog('Página carregada, inicializando testes...');
+            
+            // Conectar WebSocket
+            try {
+                socket = io('http://localhost:3001');
+                
+                socket.on('connect', () => {
+                    addLog('WebSocket conectado', 'success');
+                    updateStatus('Sistema pronto para testes', 'success');
+                });
+                
+                socket.on('disconnect', () => {
+                    addLog('WebSocket desconectado', 'error');
+                });
+                
+                // Escutar mensagens de conversas
+                socket.on('chatwood', (data) => {
+                    if (data.type === 'message') {
+                        addLog(`Mensagem de conversa recebida: ${JSON.stringify(data)}`, 'info');
+                        processConversationMessage(data);
+                    }
+                });
+                
+                // Escutar mensagens internas
+                socket.on('internal-message', (messageData) => {
+                    addLog(`Mensagem interna recebida: ${JSON.stringify(messageData)}`, 'info');
+                    processInternalMessage(messageData);
+                });
+                
+            } catch (error) {
+                addLog(`Erro ao conectar WebSocket: ${error.message}`, 'error');
+            }
+            
+            // Salvar título original
+            originalTitle = document.title;
+            
+            // Solicitar permissão de notificação
+            if ('Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission().then(permission => {
+                    addLog(`Permissão de notificação: ${permission}`, 'info');
+                });
+            }
+        });
+    </script>
+</body>
+</html> 

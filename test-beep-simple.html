@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste - Beep Simples</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 10px;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .status {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔊 Teste - Beep de Notificação</h1>
+        
+        <div class="info">
+            <p>Este teste verifica se o beep de notificação funciona usando Web Audio API.</p>
+            <p>Clique no botão abaixo para testar o som.</p>
+        </div>
+        
+        <button onclick="testBeep()">🔊 Tocar Beep de Notificação</button>
+        <button onclick="testMultipleBeeps()">🔊🔊🔊 Tocar 3 Beeps</button>
+        
+        <div id="status" class="status info">
+            Clique em um botão para testar o beep
+        </div>
+        
+        <div class="info">
+            <h3>Como Funciona:</h3>
+            <ul style="text-align: left;">
+                <li><strong>Frequência:</strong> 800Hz (tom agudo)</li>
+                <li><strong>Duração:</strong> 300ms</li>
+                <li><strong>Volume:</strong> 30%</li>
+                <li><strong>Tecnologia:</strong> Web Audio API</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        function playNotificationBeep() {
+            try {
+                // Criar contexto de áudio
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                
+                // Criar oscilador para gerar o som
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                // Configurar o som
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(800, audioContext.currentTime); // Frequência 800Hz
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                // Configurar volume e envelope
+                gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+                gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.01);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+                
+                // Tocar o som
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.3);
+                
+                return true;
+            } catch (error) {
+                console.error('Erro ao tocar beep:', error);
+                return false;
+            }
+        }
+
+        function testBeep() {
+            const status = document.getElementById('status');
+            status.innerHTML = '🔊 Tocando beep...';
+            status.className = 'status info';
+            
+            const success = playNotificationBeep();
+            
+            if (success) {
+                setTimeout(() => {
+                    status.innerHTML = '✅ Beep tocado com sucesso!';
+                    status.className = 'status success';
+                }, 100);
+            } else {
+                setTimeout(() => {
+                    status.innerHTML = '❌ Erro ao tocar beep';
+                    status.className = 'status error';
+                }, 100);
+            }
+        }
+
+        function testMultipleBeeps() {
+            const status = document.getElementById('status');
+            status.innerHTML = '🔊 Tocando 3 beeps...';
+            status.className = 'status info';
+            
+            let successCount = 0;
+            
+            // Tocar 3 beeps com intervalo
+            for (let i = 0; i < 3; i++) {
+                setTimeout(() => {
+                    const success = playNotificationBeep();
+                    if (success) successCount++;
+                    
+                    if (i === 2) { // Último beep
+                        setTimeout(() => {
+                            if (successCount === 3) {
+                                status.innerHTML = '✅ Todos os 3 beeps tocados com sucesso!';
+                                status.className = 'status success';
+                            } else {
+                                status.innerHTML = `⚠️ ${successCount}/3 beeps tocados com sucesso`;
+                                status.className = 'status error';
+                            }
+                        }, 100);
+                    }
+                }, i * 400); // 400ms entre cada beep
+            }
+        }
+
+        // Verificar suporte ao carregar a página
+        window.addEventListener('load', function() {
+            const status = document.getElementById('status');
+            
+            if (window.AudioContext || window.webkitAudioContext) {
+                status.innerHTML = '✅ Web Audio API disponível - Pronto para testar!';
+                status.className = 'status success';
+            } else {
+                status.innerHTML = '❌ Web Audio API não disponível neste navegador';
+                status.className = 'status error';
+            }
+        });
+    </script>
+</body>
+</html> 
