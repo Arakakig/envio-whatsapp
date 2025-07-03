@@ -1036,6 +1036,29 @@ app.get('/api/attendance/dashboard', async (req, res) => {
     let recentConversations = await getRecentConversations(50);
     console.log('[DASHBOARD] Conversas encontradas:', recentConversations.length);
 
+    // Filtrar canais @newsletter e outros canais indesejados
+    recentConversations = recentConversations.filter(conv => {
+      const chatName = conv.chat_name || '';
+      const customerPhone = conv.customer_phone || '';
+      
+      // Remover canais @newsletter
+      if (chatName.includes('@newsletter') || customerPhone.includes('@newsletter')) {
+        console.log('[DASHBOARD] Removendo canal @newsletter:', chatName);
+        return false;
+      }
+      
+      // Remover outros tipos de canais indesejados
+      if (chatName.includes('@broadcast') || chatName.includes('@status') || 
+          chatName.includes('@channel') || customerPhone.includes('@broadcast')) {
+        console.log('[DASHBOARD] Removendo canal indesejado:', chatName);
+        return false;
+      }
+      
+      return true;
+    });
+    
+    console.log('[DASHBOARD] Conversas após filtro de canais:', recentConversations.length);
+
     // Determinar o tipo de chat baseado no customer_phone e chat_id
     console.log('[DASHBOARD] Processando tipos de chat...');
     recentConversations = recentConversations.map(conv => {
@@ -1140,9 +1163,23 @@ app.get('/api/attendance/conversations', async (req, res) => {
     conversations = conversations.filter(conv => {
       const phone = conv.customer_phone || '';
       const chatId = conv.chat_id || '';
+      const chatName = conv.chat_name || '';
 
       // Remover status
       if (phone === 'status@broadcast') {
+        return false;
+      }
+
+      // Remover canais @newsletter
+      if (chatName.includes('@newsletter') || phone.includes('@newsletter')) {
+        console.log('[API] Removendo canal @newsletter:', chatName);
+        return false;
+      }
+
+      // Remover outros canais indesejados
+      if (chatName.includes('@broadcast') || chatName.includes('@status') || 
+          chatName.includes('@channel') || phone.includes('@broadcast')) {
+        console.log('[API] Removendo canal indesejado:', chatName);
         return false;
       }
 

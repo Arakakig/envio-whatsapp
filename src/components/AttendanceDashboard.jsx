@@ -108,6 +108,21 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
     if (conversations.length === 0) return [];
     
     const filtered = conversations.filter(conv => {
+      // Filtrar canais @newsletter - NÃO mostrar
+      if (conv.chat_name && conv.chat_name.includes('@newsletter')) {
+        return false;
+      }
+      
+      // Filtrar outros tipos de canais (broadcast, status, etc.)
+      if (conv.chat_name && (
+        conv.chat_name.includes('@broadcast') ||
+        conv.chat_name.includes('@status') ||
+        conv.chat_name.includes('@channel') ||
+        conv.chat_name.includes('@group') && conv.chat_name.includes('newsletter')
+      )) {
+        return false;
+      }
+      
       // Filtrar por tipo de chat
       if (chatTypeFilter !== 'all' && conv.chat_type !== chatTypeFilter) {
         return false;
@@ -136,7 +151,7 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       return true;
     });
     
-    console.log('[DASHBOARD] Conversas filtradas:', filtered.length);
+    console.log('[DASHBOARD] Conversas filtradas:', filtered.length, '(canais @newsletter removidos)');
     return filtered;
   }, [conversations, chatTypeFilter, selectedAttendant, sectorFilter, searchTerm]);
 
