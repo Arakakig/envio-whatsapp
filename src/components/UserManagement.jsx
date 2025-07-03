@@ -36,6 +36,7 @@ import {
 
 const UserManagement = () => {
   const [users, setUsers] = useState([]);
+  const [sectors, setSectors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [openDialog, setOpenDialog] = useState(false);
@@ -44,7 +45,7 @@ const UserManagement = () => {
     username: '',
     email: '',
     full_name: '',
-    sector: '',
+    sector_id: '',
     role: 'user',
     is_active: true,
     password: ''
@@ -75,8 +76,27 @@ const UserManagement = () => {
     }
   };
 
+  // Carregar setores
+  const loadSectors = async () => {
+    try {
+      const response = await fetch('http://localhost:3001/api/sectors', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setSectors(data.sectors);
+      }
+    } catch (err) {
+      console.error('Erro ao carregar setores:', err);
+    }
+  };
+
   useEffect(() => {
     loadUsers();
+    loadSectors();
   }, []);
 
   // Abrir diálogo para criar/editar usuário
@@ -87,7 +107,7 @@ const UserManagement = () => {
         username: user.username,
         email: user.email,
         full_name: user.full_name,
-        sector: user.sector || '',
+        sector_id: user.sector_id || '',
         role: user.role,
         is_active: user.is_active,
         password: ''
@@ -98,7 +118,7 @@ const UserManagement = () => {
         username: '',
         email: '',
         full_name: '',
-        sector: '',
+        sector_id: '',
         role: 'user',
         is_active: true,
         password: ''
@@ -115,7 +135,7 @@ const UserManagement = () => {
       username: '',
       email: '',
       full_name: '',
-      sector: '',
+      sector_id: '',
       role: 'user',
       is_active: true,
       password: ''
@@ -275,7 +295,15 @@ const UserManagement = () => {
                     <TableCell>{user.full_name}</TableCell>
                     <TableCell>{user.username}</TableCell>
                     <TableCell>{user.email}</TableCell>
-                    <TableCell>{user.sector || '-'}</TableCell>
+                    <TableCell>
+                      {user.sector_name ? (
+                        <Chip
+                          label={user.sector_name}
+                          size="small"
+                          style={{ backgroundColor: user.sector_color || '#007bff', color: 'white' }}
+                        />
+                      ) : '-'}
+                    </TableCell>
                     <TableCell>
                       <Chip
                         label={user.role}
@@ -355,13 +383,31 @@ const UserManagement = () => {
               onChange={(e) => setFormData({ ...formData, email: e.target.value })}
               required
             />
-            <TextField
-              fullWidth
-              label="Setor"
-              value={formData.sector}
-              onChange={(e) => setFormData({ ...formData, sector: e.target.value })}
-              placeholder="Ex: Vendas, Suporte, Financeiro"
-            />
+            <FormControl fullWidth>
+              <InputLabel>Setor</InputLabel>
+              <Select
+                value={formData.sector_id}
+                onChange={(e) => setFormData({ ...formData, sector_id: e.target.value })}
+                label="Setor"
+              >
+                <MenuItem value="">
+                  <em>Nenhum setor</em>
+                </MenuItem>
+                {sectors.map((sector) => (
+                  <MenuItem key={sector.id} value={sector.id}>
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <Box
+                        width={16}
+                        height={16}
+                        borderRadius="50%"
+                        sx={{ backgroundColor: sector.color }}
+                      />
+                      {sector.name}
+                    </Box>
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
             <FormControl fullWidth>
               <InputLabel>Perfil</InputLabel>
               <Select

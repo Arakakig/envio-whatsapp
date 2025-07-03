@@ -339,9 +339,9 @@ export const getDashboardStats = async () => {
   }
 };
 
-export const getRecentConversations = async (limit = 10, agentId = null) => {
+export const getRecentConversations = async (limit = 10, agentId = null, sectorId = null) => {
   try {
-    console.log('[DB] Buscando conversas recentes, limite:', limit);
+    console.log('[DB] Buscando conversas recentes, limite:', limit, 'agente:', agentId, 'setor ID:', sectorId);
     let query = `
       SELECT 
         c.*,
@@ -349,6 +349,8 @@ export const getRecentConversations = async (limit = 10, agentId = null) => {
         cu.phone as customer_phone,
         u.full_name as agent_name,
         u.username as agent_username,
+        s.name as sector_name,
+        s.color as sector_color,
         COUNT(m.id) as message_count,
         MAX(m.timestamp) as last_message_time,
         CASE 
@@ -358,14 +360,25 @@ export const getRecentConversations = async (limit = 10, agentId = null) => {
       FROM conversations c
       LEFT JOIN customers cu ON c.customer_id = cu.id
       LEFT JOIN users u ON c.assigned_agent_id = u.id
+      LEFT JOIN sectors s ON c.sector_id = s.id
       LEFT JOIN messages m ON c.id = m.conversation_id
     `;
     
     const params = [];
+    const conditions = [];
     
     if (agentId) {
-      query += ' WHERE c.assigned_agent_id = ?';
+      conditions.push('c.assigned_agent_id = ?');
       params.push(agentId);
+    }
+    
+    if (sectorId) {
+      conditions.push('c.sector_id = ?');
+      params.push(sectorId);
+    }
+    
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
     }
     
     query += ' GROUP BY c.id ORDER BY has_unread_messages DESC, MAX(m.timestamp) DESC, c.updated_at DESC LIMIT ?';
@@ -451,17 +464,17 @@ export const deleteSession = async (sessionId) => {
 // ==================== FUNÇÕES DE AUTENTICAÇÃO ====================
 
 // Criar usuário
-export const createUser = async (username, email, password, fullName, role = 'user', sector = null) => {
+export const createUser = async (username, email, password, fullName, role = 'user', sector_id = null) => {
   try {
     const bcrypt = await import('bcryptjs');
     const passwordHash = await bcrypt.default.hash(password, 10);
     
     const result = await db.run(
-      'INSERT INTO users (username, email, password_hash, full_name, role, sector) VALUES (?, ?, ?, ?, ?, ?)',
-      [username, email, passwordHash, fullName, role, sector]
+      'INSERT INTO users (username, email, password_hash, full_name, role, sector_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [username, email, passwordHash, fullName, role, sector_id]
     );
     
-    return { id: result.lastID, username, email, full_name: fullName, role, sector };
+    return { id: result.lastID, username, email, full_name: fullName, role, sector_id };
   } catch (error) {
     console.error('Erro ao criar usuário:', error);
     throw error;
@@ -492,8 +505,16 @@ export const getUserByEmail = async (email) => {
 export const getUserById = async (userId, includeInactive = false) => {
   try {
     const query = includeInactive 
-      ? 'SELECT id, username, email, full_name, role, sector, is_active, last_login, created_at FROM users WHERE id = ?'
-      : 'SELECT id, username, email, full_name, role, sector, is_active, last_login, created_at FROM users WHERE id = ? AND is_active = 1';
+      ? `SELECT u.id, u.username, u.email, u.full_name, u.role, u.sector_id, u.is_active, u.last_login, u.created_at,
+                s.name as sector_name, s.color as sector_color
+         FROM users u
+         LEFT JOIN sectors s ON u.sector_id = s.id
+         WHERE u.id = ?`
+      : `SELECT u.id, u.username, u.email, u.full_name, u.role, u.sector_id, u.is_active, u.last_login, u.created_at,
+                s.name as sector_name, s.color as sector_color
+         FROM users u
+         LEFT JOIN sectors s ON u.sector_id = s.id
+         WHERE u.id = ? AND u.is_active = 1`;
     
     return await db.get(query, [userId]);
   } catch (error) {
@@ -518,7 +539,13 @@ export const updateLastLogin = async (userId) => {
 // Listar todos os usuários (apenas para admins)
 export const getAllUsers = async () => {
   try {
-    return await db.all('SELECT id, username, email, full_name, role, sector, is_active, last_login, created_at FROM users ORDER BY created_at DESC');
+    return await db.all(`
+      SELECT u.id, u.username, u.email, u.full_name, u.role, u.sector_id, u.is_active, u.last_login, u.created_at,
+             s.name as sector_name, s.color as sector_color
+      FROM users u
+      LEFT JOIN sectors s ON u.sector_id = s.id
+      ORDER BY u.created_at DESC
+    `);
   } catch (error) {
     console.error('Erro ao listar usuários:', error);
     throw error;
@@ -528,7 +555,7 @@ export const getAllUsers = async () => {
 // Atualizar usuário
 export const updateUser = async (userId, updates) => {
   try {
-    const { username, email, full_name, role, sector, is_active, password } = updates;
+    const { username, email, full_name, role, sector_id, is_active, password } = updates;
     
     // Construir query dinamicamente baseada nos campos fornecidos
     const fields = [];
@@ -554,9 +581,9 @@ export const updateUser = async (userId, updates) => {
       values.push(role);
     }
     
-    if (sector !== undefined) {
-      fields.push('sector = ?');
-      values.push(sector);
+    if (sector_id !== undefined) {
+      fields.push('sector_id = ?');
+      values.push(sector_id);
     }
     
     if (is_active !== undefined) {
@@ -739,13 +766,59 @@ export const getUnassignedConversations = async () => {
 export const getAvailableAgents = async () => {
   try {
     return await db.all(`
-      SELECT id, username, full_name, email, role, sector, is_active, last_login
-      FROM users 
-      WHERE (role = 'agent' OR role = 'admin') AND is_active = 1
-      ORDER BY full_name
+      SELECT u.id, u.username, u.full_name, u.email, u.role, u.sector_id, u.is_active, u.last_login,
+             s.name as sector_name, s.color as sector_color
+      FROM users u
+      LEFT JOIN sectors s ON u.sector_id = s.id
+      WHERE (u.role = 'agent' OR u.role = 'admin') AND u.is_active = 1
+      ORDER BY u.full_name
     `);
   } catch (error) {
     console.error('Erro ao buscar agentes disponíveis:', error);
+    throw error;
+  }
+};
+
+// Buscar todos os setores únicos
+export const getAllSectors = async () => {
+  try {
+    const sectors = await db.all(`
+      SELECT id, name, description, color, is_active, created_at, updated_at
+      FROM sectors 
+      WHERE is_active = 1
+      ORDER BY name
+    `);
+    return sectors;
+  } catch (error) {
+    console.error('Erro ao buscar setores:', error);
+    throw error;
+  }
+};
+
+// Atribuir conversa a um setor
+export const assignConversationToSector = async (conversationId, sectorId) => {
+  try {
+    await db.run(
+      'UPDATE conversations SET sector_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [sectorId, conversationId]
+    );
+    console.log(`[DB] Conversa ${conversationId} atribuída ao setor ID: ${sectorId}`);
+  } catch (error) {
+    console.error('Erro ao atribuir conversa ao setor:', error);
+    throw error;
+  }
+};
+
+// Remover atribuição de setor de uma conversa
+export const unassignConversationSector = async (conversationId) => {
+  try {
+    await db.run(
+      'UPDATE conversations SET sector_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [conversationId]
+    );
+    console.log(`[DB] Setor removido da conversa ${conversationId}`);
+  } catch (error) {
+    console.error('Erro ao remover setor da conversa:', error);
     throw error;
   }
 };
@@ -962,6 +1035,75 @@ export const getUnreadInternalMessages = async (userId) => {
     `, [userId]);
   } catch (error) {
     console.error('Erro ao buscar mensagens não lidas:', error);
+    throw error;
+  }
+};
+
+// ==================== FUNÇÕES PARA GERENCIAMENTO DE SETORES ====================
+
+// Criar novo setor
+export const createSector = async (name, description = null, color = '#007bff') => {
+  try {
+    const result = await db.run(
+      'INSERT INTO sectors (name, description, color) VALUES (?, ?, ?)',
+      [name, description, color]
+    );
+    return result.lastID;
+  } catch (error) {
+    console.error('Erro ao criar setor:', error);
+    throw error;
+  }
+};
+
+// Atualizar setor
+export const updateSector = async (id, name, description = null, color = '#007bff', isActive = true) => {
+  try {
+    const result = await db.run(
+      'UPDATE sectors SET name = ?, description = ?, color = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [name, description, color, isActive ? 1 : 0, id]
+    );
+    return result.changes > 0;
+  } catch (error) {
+    console.error('Erro ao atualizar setor:', error);
+    throw error;
+  }
+};
+
+// Deletar setor
+export const deleteSector = async (id) => {
+  try {
+    // Verificar se há usuários ou conversas associadas
+    const usersCount = await db.get('SELECT COUNT(*) as count FROM users WHERE sector_id = ?', [id]);
+    const conversationsCount = await db.get('SELECT COUNT(*) as count FROM conversations WHERE sector = ?', [id]);
+    
+    if (usersCount.count > 0 || conversationsCount.count > 0) {
+      throw new Error('FOREIGN KEY constraint failed');
+    }
+    
+    const result = await db.run('DELETE FROM sectors WHERE id = ?', [id]);
+    return result.changes > 0;
+  } catch (error) {
+    console.error('Erro ao deletar setor:', error);
+    throw error;
+  }
+};
+
+// Buscar setor por ID
+export const getSectorById = async (id) => {
+  try {
+    return await db.get('SELECT * FROM sectors WHERE id = ?', [id]);
+  } catch (error) {
+    console.error('Erro ao buscar setor:', error);
+    throw error;
+  }
+};
+
+// Buscar setor por nome
+export const getSectorByName = async (name) => {
+  try {
+    return await db.get('SELECT * FROM sectors WHERE name = ?', [name]);
+  } catch (error) {
+    console.error('Erro ao buscar setor por nome:', error);
     throw error;
   }
 };

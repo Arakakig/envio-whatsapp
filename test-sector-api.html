@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste API de Setores</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .test-section {
+            margin-bottom: 30px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .test-section h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .result {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            padding: 15px;
+            margin-top: 10px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .error {
+            background-color: #f8d7da;
+            border-color: #f5c6cb;
+            color: #721c24;
+        }
+        .success {
+            background-color: #d4edda;
+            border-color: #c3e6cb;
+            color: #155724;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .color-picker {
+            width: 60px;
+            height: 40px;
+            padding: 2px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧪 Teste da API de Setores</h1>
+    
+    <div class="container">
+        <h2>Configuração</h2>
+        <div class="form-group">
+            <label for="token">Token de Autenticação:</label>
+            <input type="text" id="token" placeholder="Cole seu token aqui" style="width: 100%;">
+        </div>
+        <button onclick="setTestToken()">Usar Token de Teste</button>
+    </div>
+
+    <div class="container">
+        <div class="test-section">
+            <h3>1. Listar Setores</h3>
+            <button onclick="listSectors()">Buscar Setores</button>
+            <div id="listResult" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>2. Criar Setor</h3>
+            <div class="form-group">
+                <label for="sectorName">Nome do Setor:</label>
+                <input type="text" id="sectorName" placeholder="Ex: Marketing">
+            </div>
+            <div class="form-group">
+                <label for="sectorDescription">Descrição:</label>
+                <textarea id="sectorDescription" rows="3" placeholder="Descrição do setor"></textarea>
+            </div>
+            <div class="form-group">
+                <label for="sectorColor">Cor:</label>
+                <input type="color" id="sectorColor" class="color-picker" value="#007bff">
+            </div>
+            <button onclick="createSector()">Criar Setor</button>
+            <div id="createResult" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>3. Atualizar Setor</h3>
+            <div class="form-group">
+                <label for="updateSectorId">ID do Setor:</label>
+                <input type="number" id="updateSectorId" placeholder="ID do setor">
+            </div>
+            <div class="form-group">
+                <label for="updateSectorName">Novo Nome:</label>
+                <input type="text" id="updateSectorName" placeholder="Novo nome">
+            </div>
+            <div class="form-group">
+                <label for="updateSectorDescription">Nova Descrição:</label>
+                <textarea id="updateSectorDescription" rows="3" placeholder="Nova descrição"></textarea>
+            </div>
+            <div class="form-group">
+                <label for="updateSectorColor">Nova Cor:</label>
+                <input type="color" id="updateSectorColor" class="color-picker" value="#007bff">
+            </div>
+            <button onclick="updateSector()">Atualizar Setor</button>
+            <div id="updateResult" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>4. Deletar Setor</h3>
+            <div class="form-group">
+                <label for="deleteSectorId">ID do Setor:</label>
+                <input type="number" id="deleteSectorId" placeholder="ID do setor">
+            </div>
+            <button onclick="deleteSector()" style="background-color: #dc3545;">Deletar Setor</button>
+            <div id="deleteResult" class="result"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>5. Testar Dashboard</h3>
+            <button onclick="testDashboard()">Testar Dashboard</button>
+            <div id="dashboardResult" class="result"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3001/api';
+
+        function setTestToken() {
+            // Token de exemplo - você deve usar um token válido
+            document.getElementById('token').value = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...';
+        }
+
+        function getHeaders() {
+            const token = document.getElementById('token').value;
+            return {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            };
+        }
+
+        function showResult(elementId, data, isError = false) {
+            const element = document.getElementById(elementId);
+            element.textContent = JSON.stringify(data, null, 2);
+            element.className = `result ${isError ? 'error' : 'success'}`;
+        }
+
+        async function listSectors() {
+            try {
+                const response = await fetch(`${API_BASE}/sectors`, {
+                    headers: getHeaders()
+                });
+                
+                const data = await response.json();
+                showResult('listResult', data, !response.ok);
+            } catch (error) {
+                showResult('listResult', { error: error.message }, true);
+            }
+        }
+
+        async function createSector() {
+            try {
+                const sectorData = {
+                    name: document.getElementById('sectorName').value,
+                    description: document.getElementById('sectorDescription').value,
+                    color: document.getElementById('sectorColor').value
+                };
+
+                const response = await fetch(`${API_BASE}/sectors`, {
+                    method: 'POST',
+                    headers: getHeaders(),
+                    body: JSON.stringify(sectorData)
+                });
+                
+                const data = await response.json();
+                showResult('createResult', data, !response.ok);
+                
+                if (response.ok) {
+                    // Limpar campos após sucesso
+                    document.getElementById('sectorName').value = '';
+                    document.getElementById('sectorDescription').value = '';
+                }
+            } catch (error) {
+                showResult('createResult', { error: error.message }, true);
+            }
+        }
+
+        async function updateSector() {
+            try {
+                const sectorId = document.getElementById('updateSectorId').value;
+                const sectorData = {
+                    name: document.getElementById('updateSectorName').value,
+                    description: document.getElementById('updateSectorDescription').value,
+                    color: document.getElementById('updateSectorColor').value
+                };
+
+                const response = await fetch(`${API_BASE}/sectors/${sectorId}`, {
+                    method: 'PUT',
+                    headers: getHeaders(),
+                    body: JSON.stringify(sectorData)
+                });
+                
+                const data = await response.json();
+                showResult('updateResult', data, !response.ok);
+            } catch (error) {
+                showResult('updateResult', { error: error.message }, true);
+            }
+        }
+
+        async function deleteSector() {
+            try {
+                const sectorId = document.getElementById('deleteSectorId').value;
+                
+                if (!confirm(`Tem certeza que deseja deletar o setor ID ${sectorId}?`)) {
+                    return;
+                }
+
+                const response = await fetch(`${API_BASE}/sectors/${sectorId}`, {
+                    method: 'DELETE',
+                    headers: getHeaders()
+                });
+                
+                const data = await response.json();
+                showResult('deleteResult', data, !response.ok);
+            } catch (error) {
+                showResult('deleteResult', { error: error.message }, true);
+            }
+        }
+
+        async function testDashboard() {
+            try {
+                const response = await fetch(`${API_BASE}/attendance/dashboard`);
+                const data = await response.json();
+                showResult('dashboardResult', data, !response.ok);
+            } catch (error) {
+                showResult('dashboardResult', { error: error.message }, true);
+            }
+        }
+
+        // Auto-executar teste de dashboard ao carregar
+        window.addEventListener('load', () => {
+            setTimeout(testDashboard, 1000);
+        });
+    </script>
+</body>
+</html> 

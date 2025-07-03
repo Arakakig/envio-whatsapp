@@ -41,6 +41,12 @@ import {
   getConversationsByAgent,
   getUnassignedConversations,
   getAvailableAgents,
+  getAllSectors,
+  createSector,
+  updateSector,
+  deleteSector,
+  assignConversationToSector,
+  unassignConversationSector,
   addCustomerNote,
   getCustomerNotes,
   updateCustomerNote,
@@ -1759,7 +1765,7 @@ app.post('/api/auth/login', async (req, res) => {
 // Cadastro
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { username, email, password, full_name, sector } = req.body;
+    const { username, email, password, full_name, sector_id } = req.body;
 
     // Validações
     if (!username || !email || !password || !full_name) {
@@ -1783,7 +1789,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     // Criar usuário
-    const newUser = await createUser(username, email, password, full_name, 'user', sector);
+    const newUser = await createUser(username, email, password, full_name, 'user', sector_id);
 
     res.status(201).json({
       success: true,
@@ -1794,7 +1800,7 @@ app.post('/api/auth/register', async (req, res) => {
         email: newUser.email,
         full_name: newUser.full_name,
         role: newUser.role,
-        sector: newUser.sector
+        sector_id: newUser.sector_id
       }
     });
 
@@ -1820,7 +1826,9 @@ app.get('/api/auth/verify', authenticateToken, async (req, res) => {
         email: user.email,
         full_name: user.full_name,
         role: user.role,
-        sector: user.sector,
+        sector_id: user.sector_id,
+        sector_name: user.sector_name,
+        sector_color: user.sector_color,
         last_login: user.last_login
       }
     });
@@ -2074,10 +2082,10 @@ app.post('/api/conversations/:conversationId/unassign', authenticateToken, async
   }
 });
 
-// Atualizar rota de conversas recentes para incluir filtro por agente
+// Atualizar rota de conversas recentes para incluir filtro por agente e setor
 app.get('/api/conversations/recent', authenticateToken, async (req, res) => {
   try {
-    const { limit = 10, agentId } = req.query;
+    const { limit = 10, agentId, sector } = req.query;
 
     // Se o usuário é agente, mostrar apenas suas conversas
     // Se é admin, pode filtrar por agente específico ou ver todas
@@ -2089,7 +2097,7 @@ app.get('/api/conversations/recent', authenticateToken, async (req, res) => {
       targetAgentId = null; // Admin vê todas as conversas
     }
 
-    const conversations = await getRecentConversations(parseInt(limit), targetAgentId);
+    const conversations = await getRecentConversations(parseInt(limit), targetAgentId, sector);
 
     res.json({
       success: true,
@@ -2097,6 +2105,135 @@ app.get('/api/conversations/recent', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Erro ao buscar conversas recentes:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// ==================== ROTAS PARA GERENCIAMENTO DE SETORES ====================
+
+// Buscar todos os setores disponíveis
+app.get('/api/sectors', authenticateToken, async (req, res) => {
+  try {
+    const sectors = await getAllSectors();
+    
+    res.json({
+      success: true,
+      sectors
+    });
+  } catch (error) {
+    console.error('Erro ao buscar setores:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Criar novo setor
+app.post('/api/sectors', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { name, description, color } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Nome do setor é obrigatório' });
+    }
+
+    const sectorId = await createSector(name, description, color);
+
+    res.json({
+      success: true,
+      message: 'Setor criado com sucesso',
+      sectorId
+    });
+  } catch (error) {
+    console.error('Erro ao criar setor:', error);
+    if (error.message.includes('UNIQUE constraint failed')) {
+      res.status(400).json({ error: 'Já existe um setor com este nome' });
+    } else {
+      res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+  }
+});
+
+// Atualizar setor
+app.put('/api/sectors/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, color, is_active } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Nome do setor é obrigatório' });
+    }
+
+    await updateSector(parseInt(id), name, description, color, is_active);
+
+    res.json({
+      success: true,
+      message: 'Setor atualizado com sucesso'
+    });
+  } catch (error) {
+    console.error('Erro ao atualizar setor:', error);
+    if (error.message.includes('UNIQUE constraint failed')) {
+      res.status(400).json({ error: 'Já existe um setor com este nome' });
+    } else {
+      res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+  }
+});
+
+// Deletar setor
+app.delete('/api/sectors/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    await deleteSector(parseInt(id));
+
+    res.json({
+      success: true,
+      message: 'Setor deletado com sucesso'
+    });
+  } catch (error) {
+    console.error('Erro ao deletar setor:', error);
+    if (error.message.includes('FOREIGN KEY constraint failed')) {
+      res.status(400).json({ error: 'Não é possível deletar um setor que possui usuários ou conversas associadas' });
+    } else {
+      res.status(500).json({ error: 'Erro interno do servidor' });
+    }
+  }
+});
+
+// Atribuir conversa a um setor
+app.post('/api/conversations/:conversationId/assign-sector', authenticateToken, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { sectorId } = req.body;
+
+    if (!sectorId) {
+      return res.status(400).json({ error: 'ID do setor é obrigatório' });
+    }
+
+    await assignConversationToSector(parseInt(conversationId), parseInt(sectorId));
+
+    res.json({
+      success: true,
+      message: 'Conversa atribuída ao setor com sucesso'
+    });
+  } catch (error) {
+    console.error('Erro ao atribuir conversa ao setor:', error);
+    res.status(500).json({ error: 'Erro interno do servidor' });
+  }
+});
+
+// Remover atribuição de setor de uma conversa
+app.post('/api/conversations/:conversationId/unassign-sector', authenticateToken, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+
+    await unassignConversationSector(parseInt(conversationId));
+
+    res.json({
+      success: true,
+      message: 'Setor removido da conversa com sucesso'
+    });
+  } catch (error) {
+    console.error('Erro ao remover setor da conversa:', error);
     res.status(500).json({ error: 'Erro interno do servidor' });
   }
 });

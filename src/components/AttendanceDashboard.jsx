@@ -47,12 +47,13 @@ import {
   Assignment,
   PersonAdd,
   MoreVert,
-  AssignmentInd
+  AssignmentInd,
+  Business
 } from '@mui/icons-material';
 import { useConversations } from '../contexts/ConversationContext';
 
 const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => {
-  const { conversations, loading, fetchConversations, markConversationAsRead } = useConversations();
+  const { conversations, loading, fetchConversations, markConversationAsRead, updateConversation } = useConversations();
   const [stats, setStats] = useState({
     total_conversations: 0,
     open_conversations: 0,
@@ -61,12 +62,15 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
   });
   const [searchTerm, setSearchTerm] = useState('');
   const [chatTypeFilter, setChatTypeFilter] = useState('all'); // 'all', 'private', 'group'
+  const [sectorFilter, setSectorFilter] = useState('all'); // 'all' ou nome do setor
+  const [sectors, setSectors] = useState([]);
   
   // Estados para atribuição de conversas
   const [agents, setAgents] = useState([]);
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [selectedConversationForAssignment, setSelectedConversationForAssignment] = useState(null);
   const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [selectedSector, setSelectedSector] = useState('');
   const [assignmentLoading, setAssignmentLoading] = useState(false);
   const [assignmentError, setAssignmentError] = useState('');
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
@@ -114,6 +118,11 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
         return false;
       }
       
+      // Filtrar por setor
+      if (sectorFilter !== 'all' && conv.sector_id !== parseInt(sectorFilter)) {
+        return false;
+      }
+      
       // Filtrar por termo de busca
       if (searchTerm) {
         const search = searchTerm.toLowerCase();
@@ -129,7 +138,7 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
     
     console.log('[DASHBOARD] Conversas filtradas:', filtered.length);
     return filtered;
-  }, [conversations, chatTypeFilter, selectedAttendant, searchTerm]);
+  }, [conversations, chatTypeFilter, selectedAttendant, sectorFilter, searchTerm]);
 
   // Carregar agentes disponíveis
   const fetchAgents = async () => {
@@ -147,6 +156,25 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       }
     } catch (error) {
       console.error('Erro ao carregar agentes:', error);
+    }
+  };
+
+  // Carregar setores disponíveis
+  const fetchSectors = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:3001/api/sectors', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setSectors(data.sectors);
+      }
+    } catch (error) {
+      console.error('Erro ao carregar setores:', error);
     }
   };
 
@@ -176,13 +204,14 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
     setAssignDialogOpen(false);
     setSelectedConversationForAssignment(null);
     setSelectedAgentId('');
+    setSelectedSector('');
     setAssignmentError('');
   };
 
-  // Atribuir conversa a um agente
+  // Atribuir conversa a um agente ou setor
   const handleAssignConversation = async () => {
-    if (!selectedAgentId) {
-      setAssignmentError('Selecione um agente');
+    if (!selectedAgentId && !selectedSector) {
+      setAssignmentError('Selecione um agente ou setor');
       return;
     }
 
@@ -191,24 +220,73 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
 
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`http://localhost:3001/api/conversations/${selectedConversationForAssignment.id}/assign`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ agentId: selectedAgentId })
-      });
+      
+      // Se selecionou agente, atribuir agente
+      if (selectedAgentId) {
+        console.log('[ASSIGN] Atribuindo agente:', selectedAgentId, 'para conversa:', selectedConversationForAssignment.id);
+        
+        const response = await fetch(`http://localhost:3001/api/conversations/${selectedConversationForAssignment.id}/assign`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ agentId: selectedAgentId })
+        });
 
-      const data = await response.json();
+        const data = await response.json();
+        console.log('[ASSIGN] Resposta da API:', data);
 
-      if (response.ok) {
-        handleAssignDialogClose();
-        fetchDashboardData(true); // Refresh forçado após atribuição
-      } else {
-        setAssignmentError(data.error || 'Erro ao atribuir conversa');
+        if (response.ok) {
+          console.log('[ASSIGN] Agente atribuído com sucesso');
+          
+          // Atualizar apenas a conversa específica no contexto
+          const agent = agents.find(a => a.id === parseInt(selectedAgentId));
+          updateConversation(selectedConversationForAssignment.id, {
+            assigned_agent_id: parseInt(selectedAgentId),
+            assigned_agent_name: agent?.full_name
+          });
+          
+          handleAssignDialogClose();
+        } else {
+          setAssignmentError(data.error || 'Erro ao atribuir conversa');
+        }
+      }
+      
+      // Se selecionou setor, atribuir setor
+      if (selectedSector) {
+        console.log('[ASSIGN] Atribuindo setor:', selectedSector, 'para conversa:', selectedConversationForAssignment.id);
+        
+        const response = await fetch(`http://localhost:3001/api/conversations/${selectedConversationForAssignment.id}/assign-sector`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ sectorId: selectedSector })
+        });
+
+        const data = await response.json();
+        console.log('[ASSIGN] Resposta da API:', data);
+
+        if (response.ok) {
+          console.log('[ASSIGN] Setor atribuído com sucesso');
+          
+          // Atualizar apenas a conversa específica no contexto
+          const selectedSectorData = sectors.find(s => s.id === parseInt(selectedSector));
+          updateConversation(selectedConversationForAssignment.id, { 
+            sector_id: parseInt(selectedSector),
+            sector_name: selectedSectorData?.name,
+            sector_color: selectedSectorData?.color
+          });
+          
+          handleAssignDialogClose();
+        } else {
+          setAssignmentError(data.error || 'Erro ao atribuir setor');
+        }
       }
     } catch (error) {
+      console.error('[ASSIGN] Erro:', error);
       setAssignmentError('Erro de conexão');
     } finally {
       setAssignmentLoading(false);
@@ -217,6 +295,7 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
 
   // Remover atribuição de conversa
   const handleUnassignConversation = async () => {
+    console.log('[UNASSIGN] Removendo atribuição da conversa:', selectedConversationForMenu.id);
     setAssignmentLoading(true);
 
     try {
@@ -229,11 +308,60 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       });
 
       if (response.ok) {
+        console.log('[UNASSIGN] Atribuição removida com sucesso');
+        
+        // Atualizar apenas a conversa específica no contexto
+        updateConversation(selectedConversationForMenu.id, { 
+          assigned_agent_id: null,
+          assigned_agent_name: null
+        });
+        
         handleMenuClose();
-        fetchDashboardData(true); // Refresh forçado após remoção de atribuição
       }
     } catch (error) {
-      console.error('Erro ao remover atribuição:', error);
+      console.error('[UNASSIGN] Erro:', error);
+    } finally {
+      setAssignmentLoading(false);
+    }
+  };
+
+  // Atribuir conversa a um setor
+  const handleAssignSectorClick = () => {
+    setSelectedConversationForAssignment(selectedConversationForMenu);
+    setSelectedSector('');
+    setAssignmentError('');
+    setAssignDialogOpen(true);
+    handleMenuClose();
+  };
+
+  // Remover setor de uma conversa
+  const handleUnassignSector = async () => {
+    console.log('[UNASSIGN-SECTOR] Removendo setor da conversa:', selectedConversationForMenu.id);
+    setAssignmentLoading(true);
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`http://localhost:3001/api/conversations/${selectedConversationForMenu.id}/unassign-sector`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        console.log('[UNASSIGN-SECTOR] Setor removido com sucesso');
+        
+        // Atualizar apenas a conversa específica no contexto
+        updateConversation(selectedConversationForMenu.id, { 
+          sector_id: null,
+          sector_name: null,
+          sector_color: null
+        });
+        
+        handleMenuClose();
+      }
+    } catch (error) {
+      console.error('[UNASSIGN-SECTOR] Erro:', error);
     } finally {
       setAssignmentLoading(false);
     }
@@ -244,6 +372,7 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
   useEffect(() => {
     fetchDashboardData();
     fetchAgents();
+    fetchSectors();
   }, []);
 
   const getStatusColor = (status) => {
@@ -405,11 +534,9 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       {/* Header */}
       <Paper sx={{ p: 2, borderBottom: '1px solid', borderColor: 'divider' }}>
         <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
-          <Typography variant="h6">
-            Conversas
-          </Typography>
-          <Box display="flex" alignItems="center" gap={2}>
-            <FormControl size="small" sx={{ minWidth: 200 }}>
+      
+          <Box display="flex" alignItems="center" gap={1}>
+            <FormControl size="small" sx={{ minWidth: 150 }}>
               <InputLabel>Atendente</InputLabel>
               <Select
                 value={selectedAttendant}
@@ -426,9 +553,32 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
                 ))}
               </Select>
             </FormControl>
-       
             
-         
+            <FormControl size="small" sx={{ minWidth: 200 }}>
+              <InputLabel>Setor</InputLabel>
+              <Select
+                value={sectorFilter}
+                onChange={(e) => setSectorFilter(e.target.value)}
+                label="Setor"
+              >
+                <MenuItem value="all">
+                  <em>Todos os setores</em>
+                </MenuItem>
+                {sectors.map((sector) => (
+                  <MenuItem key={sector.id} value={sector.id}>
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <Box
+                        width={16}
+                        height={16}
+                        borderRadius="50%"
+                        sx={{ backgroundColor: sector.color }}
+                      />
+                      {sector.name}
+                    </Box>
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
           </Box>
         </Box>
         
@@ -597,6 +747,16 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
                             color="success"
                           />
                         )}
+                        {conversation.sector_name && (
+                          <Chip
+                            icon={<Business />}
+                            label={conversation.sector_name}
+                            size="small"
+                            variant="outlined"
+                            color="info"
+                            style={{ backgroundColor: conversation.sector_color || '#e3f2fd' }}
+                          />
+                        )}
                       </Box>
                     </React.Fragment>
                   }
@@ -608,6 +768,7 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
                     edge="end"
                     onClick={(e) => handleMenuOpen(e, conversation)}
                     size="small"
+                    disabled={assignmentLoading}
                   >
                     <MoreVert />
                   </IconButton>
@@ -637,6 +798,20 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
                 Remover atribuição
               </MenuItem>
             )}
+            
+            <Divider />
+            
+            {!selectedConversationForMenu.sector_id ? (
+              <MenuItem onClick={handleAssignSectorClick}>
+                <Business sx={{ mr: 1 }} />
+                Atribuir a setor
+              </MenuItem>
+            ) : (
+              <MenuItem onClick={handleUnassignSector}>
+                <Business sx={{ mr: 1 }} />
+                Remover setor ({selectedConversationForMenu.sector_name})
+              </MenuItem>
+            )}
           </>
         )}
       </Menu>
@@ -663,9 +838,38 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
                 onChange={(e) => setSelectedAgentId(e.target.value)}
                 label="Selecionar Agente"
               >
+                <MenuItem value="">
+                  <em>Nenhum agente</em>
+                </MenuItem>
                 {agents.map((agent) => (
                   <MenuItem key={agent.id} value={agent.id}>
                     {agent.full_name} ({agent.role})
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            
+            <FormControl fullWidth>
+              <InputLabel>Selecionar Setor</InputLabel>
+              <Select
+                value={selectedSector}
+                onChange={(e) => setSelectedSector(e.target.value)}
+                label="Selecionar Setor"
+              >
+                <MenuItem value="">
+                  <em>Nenhum setor</em>
+                </MenuItem>
+                {sectors.map((sector) => (
+                  <MenuItem key={sector.id} value={sector.id}>
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <Box
+                        width={16}
+                        height={16}
+                        borderRadius="50%"
+                        sx={{ backgroundColor: sector.color }}
+                      />
+                      {sector.name}
+                    </Box>
                   </MenuItem>
                 ))}
               </Select>
@@ -677,7 +881,8 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
           <Button 
             onClick={handleAssignConversation} 
             variant="contained"
-            disabled={assignmentLoading || !selectedAgentId}
+            disabled={assignmentLoading || (!selectedAgentId && !selectedSector)}
+            startIcon={assignmentLoading ? <CircularProgress size={16} /> : null}
           >
             {assignmentLoading ? 'Atribuindo...' : 'Atribuir'}
           </Button>

@@ -53,7 +53,8 @@ import {
   AccountCircle as AccountCircleIcon,
   Chat as ChatIcon,
   Note as NoteIcon,
-  Download as DownloadIcon
+  Download as DownloadIcon,
+  Business
 } from '@mui/icons-material';
 import { DataGrid } from '@mui/x-data-grid';
 import Papa from 'papaparse';
@@ -63,6 +64,7 @@ import AttendanceChat from './components/AttendanceChat';
 import Login from './components/Login';
 import Register from './components/Register';
 import UserManagement from './components/UserManagement';
+import SectorManagement from './components/SectorManagement';
 
 import CustomerNotes from './components/CustomerNotes';
 import InternalChat from './components/InternalChat';
@@ -111,7 +113,7 @@ function App() {
   const [socket, setSocket] = useState(null);
   
   // Estados para atendimento
-  const [currentView, setCurrentView] = useState('bulk'); // 'bulk', 'attendance', 'userManagement', 'internalChat', 'customerNotes'
+  const [currentView, setCurrentView] = useState('bulk'); // 'bulk', 'attendance', 'userManagement', 'sectorManagement', 'internalChat', 'customerNotes'
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
 
@@ -958,16 +960,24 @@ function App() {
   // Verificar token
   const verifyToken = async (token, user) => {
     try {
+      console.log('Verificando token...');
+      console.log('Token presente:', !!token);
+      console.log('Usuário:', user);
+      
       const response = await fetch(`${API_BASE_URL}/auth/verify`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
       });
 
+      console.log('Status da verificação:', response.status);
+      
       if (response.ok) {
+        console.log('Token válido, autenticando usuário');
         setIsAuthenticated(true);
         setCurrentUser(user);
       } else {
+        console.log('Token inválido, limpando localStorage');
         // Token inválido, limpar localStorage
         localStorage.removeItem('token');
         localStorage.removeItem('user');
@@ -1117,13 +1127,22 @@ function App() {
             Observações
           </Button>
           {currentUser?.role === 'admin' && (
-            <Button
-              variant={currentView === 'userManagement' ? 'contained' : 'outlined'}
-              startIcon={<PersonIcon />}
-              onClick={() => setCurrentView('userManagement')}
-            >
-              Gerenciamento de Usuários
-            </Button>
+            <>
+              <Button
+                variant={currentView === 'userManagement' ? 'contained' : 'outlined'}
+                startIcon={<PersonIcon />}
+                onClick={() => setCurrentView('userManagement')}
+              >
+                Gerenciamento de Usuários
+              </Button>
+              <Button
+                variant={currentView === 'sectorManagement' ? 'contained' : 'outlined'}
+                startIcon={<Business />}
+                onClick={() => setCurrentView('sectorManagement')}
+              >
+                Gerenciamento de Setores
+              </Button>
+            </>
           )}
         </Box>
       </Paper>
@@ -1299,6 +1318,11 @@ function App() {
       {/* Interface de Gerenciamento de Usuários */}
       {currentView === 'userManagement' && currentUser?.role === 'admin' && (
         <UserManagement />
+      )}
+
+      {/* Interface de Gerenciamento de Setores */}
+      {currentView === 'sectorManagement' && currentUser?.role === 'admin' && (
+        <SectorManagement />
       )}
 
       {/* Interface de Chat Interno */}
