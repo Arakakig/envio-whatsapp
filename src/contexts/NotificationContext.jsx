@@ -44,7 +44,7 @@ const playNotificationBeep = () => {
   }
 };
 
-export const NotificationProvider = ({ children }) => {
+export const NotificationProvider = ({ children, conversationContext }) => {
   const [currentUser, setCurrentUser] = useState(null);
   const [unreadCounts, setUnreadCounts] = useState({});
   const [toasts, setToasts] = useState([]);
@@ -159,6 +159,15 @@ export const NotificationProvider = ({ children }) => {
     socketRef.current.on('chatwood', (data) => {
       if (data.type === 'message') {
         console.log('[NOTIFICATIONS] Nova mensagem de conversa recebida:', data);
+        
+        // Atualizar conversa no contexto global
+        if (conversationContext && conversationContext.updateConversationMessage) {
+          conversationContext.updateConversationMessage(data.conversationId, {
+            content: data.message,
+            timestamp: data.timestamp,
+            direction: 'inbound'
+          });
+        }
         
         // Verificar se a conversa não está sendo visualizada atualmente
         const isConversationOpen = window.location.pathname.includes('attendance') && 

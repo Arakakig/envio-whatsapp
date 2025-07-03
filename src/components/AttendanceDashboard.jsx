@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Box,
   Card,
@@ -49,18 +49,16 @@ import {
   MoreVert,
   AssignmentInd
 } from '@mui/icons-material';
-import { io } from 'socket.io-client';
+import { useConversations } from '../contexts/ConversationContext';
 
 const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => {
+  const { conversations, loading, fetchConversations } = useConversations();
   const [stats, setStats] = useState({
     total_conversations: 0,
     open_conversations: 0,
     total_customers: 0,
     total_messages: 0
   });
-  const [allConversations, setAllConversations] = useState([]);
-  const [filteredConversations, setFilteredConversations] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [chatTypeFilter, setChatTypeFilter] = useState('all'); // 'all', 'private', 'group'
   
@@ -75,11 +73,10 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
   const [selectedConversationForMenu, setSelectedConversationForMenu] = useState(null);
   const [selectedAttendant, setSelectedAttendant] = useState('');
   const [viewedConversations, setViewedConversations] = useState(new Map());
-  const socketRef = useRef(null);
 
-  const fetchDashboardData = async () => {
+  const fetchDashboardData = async (forceRefresh = false) => {
     try {
-      console.log('[DASHBOARD] Buscando dados...');
+      console.log('[DASHBOARD] Buscando dados...', forceRefresh ? '(refresh forçado)' : '');
       const response = await fetch('http://localhost:3001/api/attendance/dashboard');
       const data = await response.json();
       
@@ -87,45 +84,53 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       
       if (data.success) {
         setStats(data.stats);
-        console.log('[DASHBOARD] Conversas recebidas:', data.recentConversations.length);
-        setAllConversations(data.recentConversations);
+        console.log('[DASHBOARD] Estatísticas atualizadas');
         
-        // Filtrar as conversas
-        const filtered = data.recentConversations.filter(conv => {
-          // Filtrar por tipo de chat
-          if (chatTypeFilter !== 'all' && conv.chat_type !== chatTypeFilter) {
-            return false;
-          }
-          
-          // Filtrar por atendente
-          if (selectedAttendant && conv.assigned_agent_id !== parseInt(selectedAttendant)) {
-            return false;
-          }
-          
-          // Filtrar por termo de busca
-          if (searchTerm) {
-            const search = searchTerm.toLowerCase();
-            const matches = 
-              (conv.customer_name && conv.customer_name.toLowerCase().includes(search)) ||
-              (conv.customer_phone && conv.customer_phone.toLowerCase().includes(search)) ||
-              (conv.chat_name && conv.chat_name.toLowerCase().includes(search));
-            if (!matches) return false;
-          }
-          
-          return true;
-        });
-        
-        console.log('[DASHBOARD] Conversas filtradas:', filtered.length);
-        setFilteredConversations(filtered);
+        // Buscar conversas apenas se for refresh forçado ou se não houver conversas no cache
+        if (forceRefresh || conversations.length === 0) {
+          await fetchConversations(forceRefresh);
+        } else {
+          console.log('[DASHBOARD] Usando cache de conversas existente');
+        }
       } else {
         console.error('[DASHBOARD] Erro na resposta:', data);
       }
     } catch (error) {
       console.error('Erro ao buscar dados do dashboard:', error);
-    } finally {
-      setLoading(false);
     }
   };
+
+  // Filtrar conversas usando useMemo para melhor performance
+  const filteredConversations = useMemo(() => {
+    if (conversations.length === 0) return [];
+    
+    const filtered = conversations.filter(conv => {
+      // Filtrar por tipo de chat
+      if (chatTypeFilter !== 'all' && conv.chat_type !== chatTypeFilter) {
+        return false;
+      }
+      
+      // Filtrar por atendente
+      if (selectedAttendant && conv.assigned_agent_id !== parseInt(selectedAttendant)) {
+        return false;
+      }
+      
+      // Filtrar por termo de busca
+      if (searchTerm) {
+        const search = searchTerm.toLowerCase();
+        const matches = 
+          (conv.customer_name && conv.customer_name.toLowerCase().includes(search)) ||
+          (conv.customer_phone && conv.customer_phone.toLowerCase().includes(search)) ||
+          (conv.chat_name && conv.chat_name.toLowerCase().includes(search));
+        if (!matches) return false;
+      }
+      
+      return true;
+    });
+    
+    console.log('[DASHBOARD] Conversas filtradas:', filtered.length);
+    return filtered;
+  }, [conversations, chatTypeFilter, selectedAttendant, searchTerm]);
 
   // Carregar agentes disponíveis
   const fetchAgents = async () => {
@@ -199,17 +204,8 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       const data = await response.json();
 
       if (response.ok) {
-        // Atualizar a conversa na lista
-        setAllConversations(prev => 
-          prev.map(conv => 
-            conv.id === selectedConversationForAssignment.id 
-              ? { ...conv, assigned_agent_id: selectedAgentId }
-              : conv
-          )
-        );
-        
         handleAssignDialogClose();
-        fetchDashboardData(); // Recarregar dados
+        fetchDashboardData(true); // Refresh forçado após atribuição
       } else {
         setAssignmentError(data.error || 'Erro ao atribuir conversa');
       }
@@ -234,17 +230,8 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
       });
 
       if (response.ok) {
-        // Atualizar a conversa na lista
-        setAllConversations(prev => 
-          prev.map(conv => 
-            conv.id === selectedConversationForMenu.id 
-              ? { ...conv, assigned_agent_id: null }
-              : conv
-          )
-        );
-        
         handleMenuClose();
-        fetchDashboardData(); // Recarregar dados
+        fetchDashboardData(true); // Refresh forçado após remoção de atribuição
       }
     } catch (error) {
       console.error('Erro ao remover atribuição:', error);
@@ -253,67 +240,12 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
     }
   };
 
-  // Função para atualizar apenas uma conversa específica
-  const updateConversationWithNewMessage = (conversationId, messageData) => {
-    setAllConversations(prev => {
-      // Encontrar a conversa atual
-      const conversationIndex = prev.findIndex(conv => conv.id === conversationId);
-      if (conversationIndex === -1) return prev;
-      
-      // Criar nova lista com a conversa atualizada
-      const updatedConversations = [...prev];
-      const updatedConversation = {
-        ...updatedConversations[conversationIndex],
-        has_unread_messages: true,
-        last_message_time: messageData.timestamp,
-        message_count: (updatedConversations[conversationIndex].message_count || 0) + 1
-      };
-      
-      // Remover a conversa da posição atual
-      updatedConversations.splice(conversationIndex, 1);
-      
-      // Adicionar no topo da lista
-      updatedConversations.unshift(updatedConversation);
-      
-      return updatedConversations;
-    });
-  };
+
 
   useEffect(() => {
     fetchDashboardData();
     fetchAgents();
   }, []);
-
-  // Efeito para refazer a filtragem quando os filtros mudarem
-  useEffect(() => {
-    if (allConversations.length > 0) {
-      const filtered = allConversations.filter(conv => {
-        // Filtrar por tipo de chat
-        if (chatTypeFilter !== 'all' && conv.chat_type !== chatTypeFilter) {
-          return false;
-        }
-        
-        // Filtrar por atendente
-        if (selectedAttendant && conv.assigned_agent_id !== parseInt(selectedAttendant)) {
-          return false;
-        }
-        
-        // Filtrar por termo de busca
-        if (searchTerm) {
-          const search = searchTerm.toLowerCase();
-          const matches = 
-            (conv.customer_name && conv.customer_name.toLowerCase().includes(search)) ||
-            (conv.customer_phone && conv.customer_phone.toLowerCase().includes(search)) ||
-            (conv.chat_name && conv.chat_name.toLowerCase().includes(search));
-          if (!matches) return false;
-        }
-        
-        return true;
-      });
-      
-      setFilteredConversations(filtered);
-    }
-  }, [searchTerm, chatTypeFilter, selectedAttendant, allConversations]);
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -452,29 +384,13 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
   const markConversationAsSeen = async (conversationId) => {
     try {
       // Encontrar a conversa atual para obter o timestamp da última mensagem
-      const currentConversation = allConversations.find(conv => conv.id === conversationId);
+      const currentConversation = conversations.find(conv => conv.id === conversationId);
       const lastMessageTime = currentConversation?.last_message_time;
       
       // Adicionar à lista de conversas visualizadas com o timestamp
       setViewedConversations(prev => new Map(prev.set(conversationId, lastMessageTime)));
       
-      // Marcar imediatamente no estado local para feedback instantâneo
-      setAllConversations(prev => 
-        prev.map(conv => 
-          conv.id === conversationId 
-            ? { ...conv, has_unread_messages: false }
-            : conv
-        )
-      );
-      
-      // Atualizar também a lista filtrada
-      setFilteredConversations(prev => 
-        prev.map(conv => 
-          conv.id === conversationId 
-            ? { ...conv, has_unread_messages: false }
-            : conv
-        )
-      );
+      // Feedback instantâneo será fornecido pelo contexto global
       
       // Fazer a requisição em background
       fetch(`http://localhost:3001/api/attendance/conversations/${conversationId}/seen`, {
@@ -487,45 +403,14 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
           newMap.delete(conversationId);
           return newMap;
         });
-        setAllConversations(prev => 
-          prev.map(conv => 
-            conv.id === conversationId 
-              ? { ...conv, has_unread_messages: true }
-              : conv
-          )
-        );
-        setFilteredConversations(prev => 
-          prev.map(conv => 
-            conv.id === conversationId 
-              ? { ...conv, has_unread_messages: true }
-              : conv
-          )
-        );
+        // Reverter será feito pelo contexto global se necessário
       });
     } catch (error) {
       console.error('Erro ao marcar conversa como visualizada:', error);
     }
   };
 
-  // Conectar ao socket para atualizações em tempo real
-  useEffect(() => {
-    socketRef.current = io('http://localhost:3001');
-    
-    // Escutar novas mensagens (apenas para atualizar a lista, notificações são gerenciadas pelo contexto global)
-    socketRef.current.on('chatwood', (data) => {
-      if (data.type === 'message') {
-        console.log('[DASHBOARD] Nova mensagem recebida via socket:', data);
-        // Atualizar apenas a conversa específica
-        updateConversationWithNewMessage(data.conversationId, data);
-      }
-    });
 
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
-    };
-  }, []);
 
   if (loading) {
     return (
@@ -597,7 +482,7 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
           <Box ml="auto">
             <IconButton
               onClick={() => {
-                fetchDashboardData();
+                fetchDashboardData(true); // Refresh forçado
                 fetchAgents();
               }}
               size="small"

@@ -67,7 +67,19 @@ import UserManagement from './components/UserManagement';
 import CustomerNotes from './components/CustomerNotes';
 import InternalChat from './components/InternalChat';
 import { NotificationProvider } from './contexts/NotificationContext';
+import { ConversationProvider, useConversations } from './contexts/ConversationContext';
 import NotificationBadge from './components/NotificationBadge';
+
+// Componente wrapper para passar o contexto das conversas para o NotificationProvider
+const NotificationProviderWrapper = ({ children }) => {
+  const conversationContext = useConversations();
+  
+  return (
+    <NotificationProvider conversationContext={conversationContext}>
+      {children}
+    </NotificationProvider>
+  );
+};
 
 // URL da API backend
 const API_BASE_URL = 'http://localhost:3001/api';
@@ -1033,8 +1045,9 @@ function App() {
   }
 
   return (
-    <NotificationProvider>
-      <Container maxWidth="lg" sx={{ py: 4 }}>
+    <ConversationProvider>
+      <NotificationProviderWrapper>
+        <Container maxWidth="lg" sx={{ py: 4 }}>
       {/* Header com AppBar */}
       <AppBar position="static" sx={{ mb: 4 }}>
         <Toolbar>
@@ -2068,7 +2081,8 @@ function App() {
         </Box>
       )}
     </Container>
-    </NotificationProvider>
+      </NotificationProviderWrapper>
+    </ConversationProvider>
   );
 }
 

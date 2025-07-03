@@ -40,8 +40,10 @@ import {
 } from '@mui/icons-material';
 import { io } from 'socket.io-client';
 import CustomerNotes from './CustomerNotes';
+import { useConversations } from '../contexts/ConversationContext';
 
 const AttendanceChat = ({ conversation, onBack }) => {
+  const { markConversationAsRead } = useConversations();
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -73,6 +75,11 @@ const AttendanceChat = ({ conversation, onBack }) => {
     if (conversation) {
       fetchMessages();
       
+      // Marcar conversa como lida
+      if (conversation.has_unread_messages) {
+        markConversationAsRead(conversation.id);
+      }
+      
       // Conectar ao socket
       const newSocket = io();
       setSocket(newSocket);
@@ -100,7 +107,7 @@ const AttendanceChat = ({ conversation, onBack }) => {
         newSocket.disconnect();
       };
     }
-  }, [conversation]);
+  }, [conversation, markConversationAsRead]);
 
   useEffect(() => {
     scrollToBottom();
