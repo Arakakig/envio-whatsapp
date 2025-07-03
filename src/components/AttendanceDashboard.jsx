@@ -52,7 +52,7 @@ import {
 import { useConversations } from '../contexts/ConversationContext';
 
 const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => {
-  const { conversations, loading, fetchConversations } = useConversations();
+  const { conversations, loading, fetchConversations, markConversationAsRead } = useConversations();
   const [stats, setStats] = useState({
     total_conversations: 0,
     open_conversations: 0,
@@ -72,7 +72,6 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
   const [selectedConversationForMenu, setSelectedConversationForMenu] = useState(null);
   const [selectedAttendant, setSelectedAttendant] = useState('');
-  const [viewedConversations, setViewedConversations] = useState(new Map());
 
   const fetchDashboardData = async (forceRefresh = false) => {
     try {
@@ -383,28 +382,9 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
 
   const markConversationAsSeen = async (conversationId) => {
     try {
-      // Encontrar a conversa atual para obter o timestamp da última mensagem
-      const currentConversation = conversations.find(conv => conv.id === conversationId);
-      const lastMessageTime = currentConversation?.last_message_time;
-      
-      // Adicionar à lista de conversas visualizadas com o timestamp
-      setViewedConversations(prev => new Map(prev.set(conversationId, lastMessageTime)));
-      
-      // Feedback instantâneo será fornecido pelo contexto global
-      
-      // Fazer a requisição em background
-      fetch(`http://localhost:3001/api/attendance/conversations/${conversationId}/seen`, {
-        method: 'POST'
-      }).catch(error => {
-        console.error('Erro ao marcar conversa como visualizada:', error);
-        // Reverter se falhar
-        setViewedConversations(prev => {
-          const newMap = new Map(prev);
-          newMap.delete(conversationId);
-          return newMap;
-        });
-        // Reverter será feito pelo contexto global se necessário
-      });
+      // Usar a função do contexto global que já faz tudo
+      await markConversationAsRead(conversationId);
+      console.log('[DASHBOARD] Conversa marcada como lida via contexto:', conversationId);
     } catch (error) {
       console.error('Erro ao marcar conversa como visualizada:', error);
     }

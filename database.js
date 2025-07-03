@@ -210,10 +210,16 @@ export const updateConversationStatus = async (conversationId, status) => {
 
 export const markConversationAsSeen = async (conversationId) => {
   try {
+    // Usar o mesmo fuso horário das mensagens (UTC)
+    const now = new Date();
+    const utcTimestamp = now.toISOString();
+    
     await db.run(
-      'UPDATE conversations SET last_seen = CURRENT_TIMESTAMP WHERE id = ?',
-      [conversationId]
+      'UPDATE conversations SET last_seen = ? WHERE id = ?',
+      [utcTimestamp, conversationId]
     );
+    
+    console.log(`[DB] Conversa ${conversationId} marcada como lida em: ${utcTimestamp}`);
   } catch (error) {
     console.error('Erro ao marcar conversa como visualizada:', error);
     throw error;
