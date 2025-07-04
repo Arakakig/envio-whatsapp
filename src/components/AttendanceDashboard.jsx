@@ -48,7 +48,8 @@ import {
   PersonAdd,
   MoreVert,
   AssignmentInd,
-  Business
+  Business,
+  Add
 } from '@mui/icons-material';
 import { useConversations } from '../contexts/ConversationContext';
 
@@ -77,6 +78,13 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
   const [selectedConversationForMenu, setSelectedConversationForMenu] = useState(null);
   const [selectedAttendant, setSelectedAttendant] = useState('');
+  
+  // Estados para nova conversa
+  const [newConversationDialogOpen, setNewConversationDialogOpen] = useState(false);
+  const [newConversationPhone, setNewConversationPhone] = useState('');
+  const [newConversationName, setNewConversationName] = useState('');
+  const [newConversationLoading, setNewConversationLoading] = useState(false);
+  const [newConversationError, setNewConversationError] = useState('');
 
   const fetchDashboardData = async (forceRefresh = false) => {
     try {
@@ -383,7 +391,82 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
     }
   };
 
+  // Funções para nova conversa
+  const handleNewConversationClick = () => {
+    setNewConversationDialogOpen(true);
+    setNewConversationPhone('');
+    setNewConversationName('');
+    setNewConversationError('');
+  };
 
+  const handleNewConversationClose = () => {
+    setNewConversationDialogOpen(false);
+    setNewConversationPhone('');
+    setNewConversationName('');
+    setNewConversationError('');
+  };
+
+  const handleCreateNewConversation = async () => {
+    if (!newConversationPhone.trim()) {
+      setNewConversationError('Número de telefone é obrigatório');
+      return;
+    }
+
+    setNewConversationLoading(true);
+    setNewConversationError('');
+
+    try {
+      const token = localStorage.getItem('token');
+      console.log('[NEW-CONVERSATION] Enviando requisição para:', 'http://localhost:3001/api/attendance/new-conversation');
+      console.log('[NEW-CONVERSATION] Dados:', { phone: newConversationPhone.trim(), name: newConversationName.trim() || null });
+      
+      const response = await fetch('http://localhost:3001/api/attendance/new-conversation', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          phone: newConversationPhone.trim(),
+          name: newConversationName.trim() || null
+        })
+      });
+
+      console.log('[NEW-CONVERSATION] Status da resposta:', response.status);
+      console.log('[NEW-CONVERSATION] Headers da resposta:', Object.fromEntries(response.headers.entries()));
+      
+      const responseText = await response.text();
+      console.log('[NEW-CONVERSATION] Resposta bruta:', responseText);
+      
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('[NEW-CONVERSATION] Erro ao fazer parse da resposta:', parseError);
+        console.error('[NEW-CONVERSATION] Resposta que causou erro:', responseText);
+        throw new Error('Resposta inválida do servidor');
+      }
+
+      if (data.success) {
+        console.log('[NEW-CONVERSATION] Nova conversa criada:', data.conversation);
+        
+        // Adicionar nova conversa ao contexto
+        if (data.conversation) {
+          // Fazer refresh para buscar a nova conversa
+          await fetchDashboardData(true);
+        }
+        
+        handleNewConversationClose();
+      } else {
+        setNewConversationError(data.error || 'Erro ao criar nova conversa');
+      }
+    } catch (error) {
+      console.error('[NEW-CONVERSATION] Erro:', error);
+      setNewConversationError('Erro ao criar nova conversa');
+    } finally {
+      setNewConversationLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (isInitialized) {
@@ -631,8 +714,16 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
             icon={<Group />}
           />
           
-          {/* Botão de refresh manual */}
-          <Box ml="auto">
+          {/* Botões de ação */}
+          <Box ml="auto" display="flex" gap={1}>
+            <IconButton
+              onClick={handleNewConversationClick}
+              size="small"
+              title="Nova conversa"
+              color="primary"
+            >
+              <Add />
+            </IconButton>
             <IconButton
               onClick={() => {
                 fetchDashboardData(true); // Refresh forçado
@@ -908,6 +999,48 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
             startIcon={assignmentLoading ? <CircularProgress size={16} /> : null}
           >
             {assignmentLoading ? 'Atribuindo...' : 'Atribuir'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Diálogo de nova conversa */}
+      <Dialog open={newConversationDialogOpen} onClose={handleNewConversationClose} maxWidth="sm" fullWidth>
+        <DialogTitle>Nova Conversa</DialogTitle>
+        <DialogContent>
+          <Box display="flex" flexDirection="column" gap={2} sx={{ mt: 2 }}>
+            {newConversationError && (
+              <Alert severity="error" onClose={() => setNewConversationError('')}>
+                {newConversationError}
+              </Alert>
+            )}
+            
+            <TextField
+              fullWidth
+              label="Número de telefone"
+              value={newConversationPhone}
+              onChange={(e) => setNewConversationPhone(e.target.value)}
+              placeholder="(67) 99999-9999"
+              helperText="Digite o número com DDD"
+            />
+            
+            <TextField
+              fullWidth
+              label="Nome do cliente (opcional)"
+              value={newConversationName}
+              onChange={(e) => setNewConversationName(e.target.value)}
+              placeholder="Nome do cliente"
+            />
+          </Box>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleNewConversationClose}>Cancelar</Button>
+          <Button 
+            onClick={handleCreateNewConversation} 
+            variant="contained"
+            disabled={newConversationLoading || !newConversationPhone.trim()}
+            startIcon={newConversationLoading ? <CircularProgress size={16} /> : null}
+          >
+            {newConversationLoading ? 'Criando...' : 'Criar Conversa'}
           </Button>
         </DialogActions>
       </Dialog>

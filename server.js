@@ -1703,6 +1703,83 @@ io.on('connection', (socket) => {
   });
 });
 
+// Criar nova conversa
+app.post('/api/attendance/new-conversation', async (req, res) => {
+  try {
+    const { phone, name } = req.body;
+    const currentSession = getCurrentSession();
+
+    if (!currentSession || !currentSession.isConnected) {
+      return res.status(400).json({ error: 'WhatsApp não está conectado' });
+    }
+
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({ error: 'Número de telefone é obrigatório' });
+    }
+
+    // Formatar o número de telefone
+    let formattedPhone = phone.replace(/\D/g, '');
+    
+    // Adicionar DDD se não tiver
+    if (formattedPhone.length === 9) {
+      formattedPhone = '67' + formattedPhone;
+    } else if (formattedPhone.length === 8) {
+      formattedPhone = '67' + formattedPhone;
+    }
+    
+    // Adicionar código do país
+    const chatId = `55${formattedPhone}@c.us`;
+
+    // Verificar se já existe uma conversa para este número
+    const existingCustomer = await getCustomerByPhone(chatId);
+    if (existingCustomer) {
+      // Buscar conversa existente
+      const existingConversation = await getActiveConversation(existingCustomer.id, chatId);
+      if (existingConversation) {
+        return res.json({
+          success: true,
+          message: 'Conversa já existe',
+          conversation: existingConversation
+        });
+      }
+    }
+
+    // Criar ou atualizar cliente
+    const customer = await createOrUpdateCustomer(chatId, name || null);
+
+    // Criar nova conversa
+    const conversation = await createConversation(
+      customer.id, 
+      currentSession.id, 
+      chatId, 
+      'private', 
+      name || null
+    );
+
+    console.log(`[NEW-CONVERSATION] Nova conversa criada: ${chatId}`);
+
+    res.json({
+      success: true,
+      message: 'Nova conversa criada com sucesso',
+      conversation: {
+        id: conversation.id,
+        customer_id: customer.id,
+        customer_phone: chatId,
+        customer_name: name || null,
+        chat_type: 'private',
+        status: 'open',
+        created_at: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('[NEW-CONVERSATION] Erro:', error);
+    res.status(500).json({ 
+      error: 'Erro ao criar nova conversa: ' + error.message 
+    });
+  }
+});
+
 // Carregar todas as sessões salvas do banco de dados
 const loadSavedSessions = async () => {
   try {
