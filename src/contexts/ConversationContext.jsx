@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
+import io from 'socket.io-client';
 
 const ConversationContext = createContext();
 
@@ -14,6 +15,8 @@ export const ConversationProvider = ({ children }) => {
   const [conversations, setConversations] = useState([]);
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [socket, setSocket] = useState(null);
+  const [isInitialized, setIsInitialized] = useState(false);
 
   // Função para buscar conversas do servidor
   const fetchConversations = useCallback(async (forceRefresh = false) => {
@@ -30,6 +33,7 @@ export const ConversationProvider = ({ children }) => {
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
+      console.log('[CONVERSATIONS] Buscando conversas...', 'Chamada #', Date.now());
       const response = await fetch('http://localhost:3001/api/attendance/dashboard', {
         headers: {
           'Authorization': `Bearer ${token}`
@@ -50,6 +54,65 @@ export const ConversationProvider = ({ children }) => {
       setLoading(false);
     }
   }, [conversations.length, lastUpdate]);
+
+  // Configurar WebSocket para receber mensagens em tempo real
+  useEffect(() => {
+    if (isInitialized) {
+      console.log('[CONVERSATIONS] WebSocket já inicializado, pulando');
+      return;
+    }
+    
+    console.log('[CONVERSATIONS] Inicializando WebSocket...');
+    setIsInitialized(true);
+    const newSocket = io('http://localhost:3001');
+    setSocket(newSocket);
+
+    // Listener para mensagens recebidas
+    newSocket.on('chatwood', (data) => {
+      if (data.type === 'message') {
+        console.log('[SOCKET] Nova mensagem recebida para conversa:', data.conversationId);
+        
+        // Atualizar apenas a conversa específica
+        setConversations(prev => {
+          const conversationIndex = prev.findIndex(conv => conv.id === data.conversationId);
+          
+          if (conversationIndex === -1) {
+            console.log('[SOCKET] Conversa não encontrada, fazendo refresh completo');
+            // Se a conversa não existe, fazer refresh completo
+            fetchConversations(true);
+            return prev;
+          }
+          
+          // Criar nova lista com a conversa atualizada
+          const updatedConversations = [...prev];
+          const updatedConversation = {
+            ...updatedConversations[conversationIndex],
+            last_message: data.message || data.mediaType || 'Mídia',
+            last_message_time: data.timestamp || new Date().toISOString(),
+            message_count: (updatedConversations[conversationIndex].message_count || 0) + 1,
+            // Marcar como não lida apenas se for mensagem recebida (inbound)
+            has_unread_messages: data.direction === 'inbound' ? true : updatedConversations[conversationIndex].has_unread_messages,
+            unread_count: data.direction === 'inbound' 
+              ? (updatedConversations[conversationIndex].unread_count || 0) + 1 
+              : updatedConversations[conversationIndex].unread_count || 0
+          };
+          
+          // Remover a conversa da posição atual
+          updatedConversations.splice(conversationIndex, 1);
+          
+          // Adicionar no topo da lista (mais recente)
+          updatedConversations.unshift(updatedConversation);
+          
+          console.log('[SOCKET] Conversa atualizada em tempo real:', data.conversationId, '- Direção:', data.direction);
+          return updatedConversations;
+        });
+      }
+    });
+
+    return () => {
+      newSocket.close();
+    };
+  }, [fetchConversations, isInitialized]);
 
   // Função para atualizar uma conversa específica
   const updateConversation = useCallback((conversationId, updates) => {
@@ -118,6 +181,21 @@ export const ConversationProvider = ({ children }) => {
     });
   }, []);
 
+  // Função para emitir mensagem enviada via WebSocket
+  const emitSentMessage = useCallback((conversationId, messageData) => {
+    if (socket) {
+      socket.emit('message_sent', {
+        conversationId,
+        message: messageData.content || messageData.message || '',
+        mediaType: messageData.mediaType,
+        mediaUrl: messageData.mediaUrl,
+        timestamp: messageData.timestamp || new Date().toISOString(),
+        direction: 'outbound'
+      });
+      console.log('[SOCKET] Mensagem enviada emitida:', conversationId);
+    }
+  }, [socket]);
+
   // Função para marcar conversa como lida
   const markConversationAsRead = useCallback(async (conversationId) => {
     try {
@@ -156,20 +234,24 @@ export const ConversationProvider = ({ children }) => {
     conversations,
     loading,
     lastUpdate,
+    socket,
     fetchConversations,
     updateConversation,
     addConversation,
     updateConversationMessage,
+    emitSentMessage,
     markConversationAsRead,
     clearCache
   }), [
     conversations,
     loading,
     lastUpdate,
+    socket,
     fetchConversations,
     updateConversation,
     addConversation,
     updateConversationMessage,
+    emitSentMessage,
     markConversationAsRead,
     clearCache
   ]);

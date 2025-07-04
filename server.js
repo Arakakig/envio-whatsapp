@@ -12,6 +12,8 @@ import { Server } from 'socket.io';
 import {
   initDatabase,
   createOrUpdateCustomer,
+  getCustomerByPhone,
+  updateCustomerContactInfo,
   getActiveConversation,
   createConversation,
   saveMessage,
@@ -100,6 +102,29 @@ const io = new Server(httpServer, {
     methods: ["GET", "POST"],
     credentials: true
   }
+});
+
+// Listener para mensagens enviadas pelo frontend
+io.on('connection', (socket) => {
+  console.log('[SOCKET] Cliente conectado:', socket.id);
+  
+  socket.on('message_sent', (data) => {
+    console.log('[SOCKET] Mensagem enviada recebida:', data);
+    // Emitir para todos os clientes (exceto o remetente)
+    socket.broadcast.emit('chatwood', {
+      type: 'message',
+      conversationId: data.conversationId,
+      message: data.message,
+      mediaType: data.mediaType,
+      mediaUrl: data.mediaUrl,
+      timestamp: data.timestamp,
+      direction: 'outbound'
+    });
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('[SOCKET] Cliente desconectado:', socket.id);
+  });
 });
 
 // Configuração do __dirname para ES modules
@@ -287,9 +312,11 @@ const createWhatsAppSession = async (sessionId, sessionName) => {
         const messageText = message.body || '';
         const isGroup = message.from.endsWith('@g.us');
         const isStatus = message.from === 'status@broadcast';
+        const isNewsletter = chatId.includes('@newsletter') || chatId.includes('newsletter');
 
-        // Ignorar mensagens de status
-        if (isStatus) {
+        // Ignorar mensagens de status e newsletter completamente
+        if (isStatus || isNewsletter) {
+          console.log(`[MESSAGE] Ignorando mensagem de ${isStatus ? 'status' : 'newsletter'}: ${chatId}`);
           return;
         }
 
@@ -881,6 +908,20 @@ app.post('/api/send-bulk-messages', upload.single('image'), async (req, res) => 
           continue;
         }
 
+        // Verificar se é newsletter ou status - não permitir envio
+        const isNewsletter = validation.numberUser.includes('newsletter') || contact.phone.includes('newsletter');
+        const isStatus = validation.numberUser === 'status' || contact.phone === 'status@broadcast';
+        
+        if (isNewsletter || isStatus) {
+          results.push({
+            phone: contact.phone,
+            name: contact.name,
+            status: 'error',
+            error: `Não é possível enviar para ${isNewsletter ? 'newsletter' : 'status'}`
+          });
+          continue;
+        }
+
         // Adicionar à lista de números processados
         phoneNumbers.push(validation.numberUser);
 
@@ -1049,10 +1090,12 @@ app.post('/api/admin/merge-conversations', async (req, res) => {
 });
 
 // ==================== ROTAS DE ATENDIMENTO ====================
-
+let teste = 0;
 // Dashboard - Estatísticas
 app.get('/api/attendance/dashboard', async (req, res) => {
   try {
+    console.log(teste)
+    teste++;
     console.log('[DASHBOARD] Iniciando busca de dados...');
     
     console.log('[DASHBOARD] Buscando estatísticas...');
@@ -1110,33 +1153,47 @@ app.get('/api/attendance/dashboard', async (req, res) => {
       };
     });
 
-    // Buscar fotos de perfil e nomes dos contatos (de forma mais robusta)
-    console.log('[DASHBOARD] Verificando cliente atual...');
+    // Buscar fotos de perfil e nomes dos contatos (usando dados locais quando disponíveis)
     const currentClient = getCurrentClient();
     if (currentClient) {
-      console.log('[DASHBOARD] Cliente conectado, buscando fotos de perfil...');
+      console.log('[DASHBOARD] Cliente conectado, processando informações dos contatos...');
       
       // Processar conversas uma por vez para evitar travamentos
       const conversationsWithProfile = [];
       for (const conv of recentConversations) {
         try {
-          let profilePicture = null;
-          let contactName = conv.customer_name || null;
+          let profilePicture = conv.profile_picture || null;
+          let contactName = conv.contact_name || conv.customer_name || null;
           
-          // Buscar foto e nome apenas para conversas privadas
+          // Buscar foto e nome apenas para conversas privadas que não têm dados locais ou dados antigos
           if (conv.chat_type === 'private' && conv.customer_phone) {
-            try {
-              // Usar timeout para evitar travamentos
-              const contactInfo = await Promise.race([
-                getContactInfo(currentClient, conv.customer_phone),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
-              ]);
-              
-              profilePicture = contactInfo.profilePicture;
-              contactName = contactInfo.contactName || contactName;
-            } catch (picError) {
-              console.log(`[DASHBOARD] Erro ao buscar foto para ${conv.customer_phone}:`, picError.message);
-              profilePicture = null;
+            const shouldUpdateContactInfo = !conv.profile_picture || 
+                                         !conv.contact_name || 
+                                         !conv.last_contact_update ||
+                                         (new Date() - new Date(conv.last_contact_update)) > (24 * 60 * 60 * 1000); // 24 horas
+            
+            if (shouldUpdateContactInfo) {
+              try {
+                console.log(`[DASHBOARD] Atualizando informações do contato ${conv.customer_phone}...`);
+                // Usar timeout para evitar travamentos
+                const contactInfo = await Promise.race([
+                  getContactInfo(currentClient, conv.customer_phone),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
+                ]);
+                
+                // Atualizar no banco de dados
+                await updateContactInfoInDatabase(conv.customer_phone, contactInfo);
+                
+                profilePicture = contactInfo.profilePicture;
+                contactName = contactInfo.contactName || contactName;
+              } catch (picError) {
+                console.log(`[DASHBOARD] Erro ao buscar foto para ${conv.customer_phone}:`, picError.message);
+                // Manter dados locais se disponíveis
+                profilePicture = conv.profile_picture || null;
+                contactName = conv.contact_name || conv.customer_name || null;
+              }
+            } else {
+              console.log(`[DASHBOARD] Usando dados locais para ${conv.customer_phone}`);
             }
           }
 
@@ -1149,21 +1206,21 @@ app.get('/api/attendance/dashboard', async (req, res) => {
           console.log(`[DASHBOARD] Erro ao processar conversa ${conv.id}:`, error.message);
           conversationsWithProfile.push({
             ...conv,
-            profilePicture: null,
-            contactName: conv.customer_name || null
+            profilePicture: conv.profile_picture || null,
+            contactName: conv.contact_name || conv.customer_name || null
           });
         }
       }
 
       recentConversations = conversationsWithProfile;
-      console.log('[DASHBOARD] Fotos de perfil processadas');
+      console.log('[DASHBOARD] Informações dos contatos processadas');
     } else {
-      console.log('[DASHBOARD] Cliente não conectado, pulando fotos de perfil');
-      // Adicionar campos vazios para manter compatibilidade
+      console.log('[DASHBOARD] Cliente não conectado, usando dados locais');
+      // Usar dados locais quando disponíveis
       recentConversations = recentConversations.map(conv => ({
         ...conv,
-        profilePicture: null,
-        contactName: conv.customer_name || null
+        profilePicture: conv.profile_picture || null,
+        contactName: conv.contact_name || conv.customer_name || null
       }));
     }
 
@@ -1462,6 +1519,17 @@ app.post('/api/attendance/send-message', upload.fields([
     if (!currentClient || !currentSession || !currentSession.isConnected) {
       console.log(`[DEBUG] WhatsApp não está conectado - retornando erro`);
       return res.status(400).json({ error: 'WhatsApp não está conectado' });
+    }
+
+    // Verificar se é newsletter ou status - não permitir envio
+    const isNewsletter = customerPhone.includes('@newsletter') || customerPhone.includes('newsletter');
+    const isStatus = customerPhone === 'status@broadcast';
+    
+    if (isNewsletter || isStatus) {
+      console.log(`[SEND-MESSAGE] Tentativa de envio para ${isNewsletter ? 'newsletter' : 'status'} bloqueada: ${customerPhone}`);
+      return res.status(400).json({ 
+        error: `Não é possível enviar mensagens para ${isNewsletter ? 'newsletter' : 'status'}` 
+      });
     }
 
 
@@ -2343,7 +2411,6 @@ const getContactInfo = async (client, contactId) => {
   try {
 
     const contact = await client.getContactById(contactId);
-    console.log(contact)
     if (contact) {
       const profilePicUrl = await contact.getProfilePicUrl();
       const contactName = contact.pushname || contact.name || null;
@@ -2359,6 +2426,18 @@ const getContactInfo = async (client, contactId) => {
   } catch (error) {
     console.error(`[CONTACT INFO] Erro ao obter informações do contato ${contactId}:`, error.message);
     return { profilePicture: null, contactName: null };
+  }
+};
+
+// Função para atualizar informações do contato no banco de dados
+const updateContactInfoInDatabase = async (phone, contactInfo) => {
+  try {
+    if (contactInfo.contactName || contactInfo.profilePicture) {
+      await updateCustomerContactInfo(phone, contactInfo.contactName, contactInfo.profilePicture);
+      console.log(`[CONTACT UPDATE] Informações do contato ${phone} atualizadas no banco`);
+    }
+  } catch (error) {
+    console.error(`[CONTACT UPDATE] Erro ao atualizar informações do contato ${phone}:`, error.message);
   }
 };
 
@@ -2419,6 +2498,44 @@ app.get('/api/attendance/contacts/:phone/profile-picture', async (req, res) => {
 
   } catch (error) {
     console.error('Erro ao buscar foto de perfil:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Forçar atualização das informações de um contato específico
+app.post('/api/attendance/contacts/:phone/update', async (req, res) => {
+  try {
+    const { phone } = req.params;
+    const currentClient = getCurrentClient();
+
+    if (!currentClient || !currentClient.isConnected) {
+      return res.status(400).json({ error: 'WhatsApp não está conectado' });
+    }
+
+    // Formatar o número do telefone
+    const formattedPhone = phone.replace(/\D/g, '');
+    const chatId = `55${formattedPhone}@c.us`;
+
+    console.log(`[CONTACT UPDATE] Forçando atualização do contato ${formattedPhone}...`);
+
+    // Obter informações completas do contato
+    const contactInfo = await getContactInfo(currentClient, chatId);
+    
+    // Atualizar no banco de dados
+    await updateContactInfoInDatabase(formattedPhone, contactInfo);
+
+    res.json({
+      success: true,
+      message: 'Informações do contato atualizadas com sucesso',
+      contact: {
+        phone: formattedPhone,
+        contactName: contactInfo.contactName,
+        profilePicture: contactInfo.profilePicture
+      }
+    });
+
+  } catch (error) {
+    console.error('Erro ao atualizar informações do contato:', error);
     res.status(500).json({ error: error.message });
   }
 });

@@ -160,6 +160,15 @@ export const NotificationProvider = ({ children, conversationContext }) => {
       if (data.type === 'message') {
         console.log('[NOTIFICATIONS] Nova mensagem de conversa recebida:', data);
         
+        // Verificar se é newsletter ou status - não mostrar notificação
+        const isNewsletter = data.from && (data.from.includes('@newsletter') || data.from.includes('newsletter'));
+        const isStatus = data.from === 'status@broadcast';
+        
+        if (isNewsletter || isStatus) {
+          console.log('[NOTIFICATIONS] Ignorando notificação de newsletter/status:', data.from);
+          return;
+        }
+        
         // Atualizar conversa no contexto global
         if (conversationContext && conversationContext.updateConversationMessage) {
           conversationContext.updateConversationMessage(data.conversationId, {

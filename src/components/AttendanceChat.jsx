@@ -43,7 +43,7 @@ import CustomerNotes from './CustomerNotes';
 import { useConversations } from '../contexts/ConversationContext';
 
 const AttendanceChat = ({ conversation, onBack }) => {
-  const { markConversationAsRead } = useConversations();
+  const { markConversationAsRead, emitSentMessage } = useConversations();
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -226,6 +226,14 @@ const AttendanceChat = ({ conversation, onBack }) => {
               : msg
           )
         );
+        
+        // Emitir mensagem enviada via WebSocket para atualizar outras abas
+        emitSentMessage(conversation.id, {
+          content: messageToSend,
+          mediaType: imageFile ? 'image' : audioFile ? 'audio' : pdfFile ? 'pdf' : 'text',
+          mediaUrl: data.mediaUrl,
+          timestamp: new Date(new Date().getTime() - (4 * 60 * 60 * 1000)).toISOString()
+        });
         
         // Limpar cache para forçar atualização
         const cacheKey = `messages_${conversation.id}`;

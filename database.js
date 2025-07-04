@@ -26,6 +26,9 @@ export const initDatabase = async () => {
         phone TEXT UNIQUE NOT NULL,
         name TEXT,
         email TEXT,
+        profile_picture TEXT,
+        contact_name TEXT,
+        last_contact_update DATETIME,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
@@ -164,6 +167,27 @@ export const getCustomerByPhone = async (phone) => {
     return await db.get('SELECT * FROM customers WHERE phone = ?', [phone]);
   } catch (error) {
     console.error('Erro ao buscar cliente:', error);
+    throw error;
+  }
+};
+
+// Atualizar informações do contato (nome e foto de perfil)
+export const updateCustomerContactInfo = async (phone, contactName = null, profilePicture = null) => {
+  try {
+    const result = await db.run(
+      'UPDATE customers SET contact_name = ?, profile_picture = ?, last_contact_update = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE phone = ?',
+      [contactName, profilePicture, phone]
+    );
+    
+    if (result.changes > 0) {
+      console.log(`[DB] Informações do contato atualizadas para ${phone}`);
+      return true;
+    } else {
+      console.log(`[DB] Cliente ${phone} não encontrado para atualização`);
+      return false;
+    }
+  } catch (error) {
+    console.error('Erro ao atualizar informações do contato:', error);
     throw error;
   }
 };
@@ -347,6 +371,9 @@ export const getRecentConversations = async (limit = 10, agentId = null, sectorI
         c.*,
         cu.name as customer_name,
         cu.phone as customer_phone,
+        cu.contact_name,
+        cu.profile_picture,
+        cu.last_contact_update,
         u.full_name as agent_name,
         u.username as agent_username,
         s.name as sector_name,

@@ -64,6 +64,7 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
   const [chatTypeFilter, setChatTypeFilter] = useState('all'); // 'all', 'private', 'group'
   const [sectorFilter, setSectorFilter] = useState('all'); // 'all' ou nome do setor
   const [sectors, setSectors] = useState([]);
+  const [isInitialized, setIsInitialized] = useState(false);
   
   // Estados para atribuição de conversas
   const [agents, setAgents] = useState([]);
@@ -79,7 +80,7 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
 
   const fetchDashboardData = async (forceRefresh = false) => {
     try {
-      console.log('[DASHBOARD] Buscando dados...', forceRefresh ? '(refresh forçado)' : '');
+      console.log('[DASHBOARD] Buscando dados...', forceRefresh ? '(refresh forçado)' : '', 'Chamada #', Date.now(), 'Inicializado:', isInitialized);
       const response = await fetch('http://localhost:3001/api/attendance/dashboard');
       const data = await response.json();
       
@@ -385,10 +386,17 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
 
 
   useEffect(() => {
+    if (isInitialized) {
+      console.log('[DASHBOARD] Componente já inicializado, pulando chamadas duplicadas');
+      return;
+    }
+    
+    console.log('[DASHBOARD] useEffect executado - montando componente');
+    setIsInitialized(true);
     fetchDashboardData();
     fetchAgents();
     fetchSectors();
-  }, []);
+  }, [isInitialized]);
 
   const getStatusColor = (status) => {
     switch (status) {
