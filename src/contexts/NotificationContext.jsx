@@ -453,11 +453,11 @@ export const NotificationProvider = ({ children, conversationContext }) => {
   const navigateToConversation = useCallback((conversationId, messageId = null) => {
     console.log('[NOTIFICATIONS] Navegando para conversa:', { conversationId, messageId });
     
-    // Disparar evento para mudar para a view de atendimento
-    const navigationEvent = new CustomEvent('navigateToAttendance', {
+    // Disparar evento para abrir a conversa
+    const event = new CustomEvent('openConversation', {
       detail: { conversationId, messageId }
     });
-    window.dispatchEvent(navigationEvent);
+    window.dispatchEvent(event);
   }, []);
 
   // Função para lidar com clique no toast
