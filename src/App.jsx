@@ -141,6 +141,31 @@ function App() {
     };
   }, []);
 
+  // Escutar evento de navegação para atendimento
+  useEffect(() => {
+    const handleNavigateToAttendance = (event) => {
+      const { conversationId, messageId } = event.detail;
+      console.log('[APP] Navegando para atendimento:', { conversationId, messageId });
+      
+      // Mudar para a view de atendimento
+      setCurrentView('attendance');
+      
+      // Aguardar um pouco para a view carregar e então abrir a conversa
+      setTimeout(() => {
+        const openEvent = new CustomEvent('openConversation', {
+          detail: { conversationId, messageId }
+        });
+        window.dispatchEvent(openEvent);
+      }, 100);
+    };
+
+    window.addEventListener('navigateToAttendance', handleNavigateToAttendance);
+    
+    return () => {
+      window.removeEventListener('navigateToAttendance', handleNavigateToAttendance);
+    };
+  }, []);
+
   // Carregar sessões
   const loadSessions = async () => {
     try {

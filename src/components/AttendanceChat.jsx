@@ -18,7 +18,10 @@ import {
   DialogActions,
   Alert,
   CircularProgress,
-  Fab
+  Fab,
+  Autocomplete,
+  ListItemAvatar,
+  Badge
 } from '@mui/material';
 import {
   Send,
@@ -36,7 +39,9 @@ import {
   Close,
   PictureAsPdf,
   Download,
-  Note
+  Note,
+  AlternateEmail,
+  Notifications
 } from '@mui/icons-material';
 import { io } from 'socket.io-client';
 import CustomerNotes from './CustomerNotes';
@@ -63,6 +68,11 @@ const AttendanceChat = ({ conversation, onBack }) => {
   const [errorMessage, setErrorMessage] = useState('');
   const [microphoneError, setMicrophoneError] = useState('');
   const [showNotes, setShowNotes] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [showMentionDialog, setShowMentionDialog] = useState(false);
+  const [selectedMessage, setSelectedMessage] = useState(null);
+  const [selectedUsers, setSelectedUsers] = useState([]);
+  const [mentionText, setMentionText] = useState('');
   const messagesEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const audioInputRef = useRef(null);
@@ -444,6 +454,134 @@ const AttendanceChat = ({ conversation, onBack }) => {
     window.open(fullUrl, '_blank');
   };
 
+  // Buscar usuários para menção
+  const fetchUsers = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:3001/api/users', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      const data = await response.json();
+      if (data.success) {
+        setUsers(data.users);
+      }
+    } catch (error) {
+      console.error('Erro ao buscar usuários:', error);
+    }
+  };
+
+  // Abrir dialog de menção
+  const handleMentionClick = (message) => {
+    setSelectedMessage(message);
+    setSelectedUsers([]);
+    setMentionText('');
+    setShowMentionDialog(true);
+    fetchUsers();
+  };
+
+  // Enviar menção
+  const handleSendMention = async () => {
+    if (!selectedMessage || selectedUsers.length === 0) return;
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:3001/api/attendance/mention', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          messageId: selectedMessage.id,
+          conversationId: conversation.id,
+          userIds: selectedUsers.map(u => u.id),
+          mentionText: mentionText
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setShowMentionDialog(false);
+        setSelectedMessage(null);
+        setSelectedUsers([]);
+        setMentionText('');
+        // Atualizar mensagem com menções
+        setMessages(prev => 
+          prev.map(msg => 
+            msg.id === selectedMessage.id 
+              ? { ...msg, mentions: data.mentions }
+              : msg
+          )
+        );
+      }
+    } catch (error) {
+      console.error('Erro ao enviar menção:', error);
+    }
+  };
+
+  // Renderizar mensagem com menções
+  const renderMessageContent = (content, mentions = []) => {
+    if (!content) return null;
+
+    // Dividir o texto em partes (texto normal e menções)
+    const parts = [];
+    let lastIndex = 0;
+
+    mentions.forEach(mention => {
+      // Adicionar texto antes da menção
+      if (mention.start > lastIndex) {
+        parts.push({
+          type: 'text',
+          content: content.substring(lastIndex, mention.start)
+        });
+      }
+      
+      // Adicionar menção
+      parts.push({
+        type: 'mention',
+        content: mention.text,
+        userId: mention.userId,
+        userName: mention.userName
+      });
+      
+      lastIndex = mention.end;
+    });
+
+    // Adicionar texto restante
+    if (lastIndex < content.length) {
+      parts.push({
+        type: 'text',
+        content: content.substring(lastIndex)
+      });
+    }
+
+    return (
+      <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
+        {parts.map((part, index) => {
+          if (part.type === 'mention') {
+            return (
+              <Chip
+                key={index}
+                label={`@${part.userName}`}
+                size="small"
+                color="primary"
+                variant="outlined"
+                sx={{ 
+                  mx: 0.5, 
+                  height: 'auto',
+                  '& .MuiChip-label': { px: 1, py: 0.5 }
+                }}
+              />
+            );
+          }
+          return part.content;
+        })}
+      </Typography>
+    );
+  };
+
   if (!conversation) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
@@ -626,16 +764,26 @@ const AttendanceChat = ({ conversation, onBack }) => {
                         </Box>
                       ) : null}
                       {message.content && (
-                        <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
-                          {message.content}
-                        </Typography>
+                        renderMessageContent(message.content, message.mentions)
                       )}
-                      <Box display="flex" alignItems="center" gap={1} mt={1}>
-                        <AccessTime fontSize="small" />
-                        <Typography variant="caption">
-                          {formatDate(message.timestamp)}
-                        </Typography>
-                        {message.direction === 'outbound' && getMessageStatus(message.status)}
+                      <Box display="flex" alignItems="center" justifyContent="space-between" mt={1}>
+                        <Box display="flex" alignItems="center" gap={1}>
+                          <AccessTime fontSize="small" />
+                          <Typography variant="caption">
+                            {formatDate(message.timestamp)}
+                          </Typography>
+                          {message.direction === 'outbound' && getMessageStatus(message.status)}
+                        </Box>
+                        {message.direction === 'inbound' && (
+                          <IconButton
+                            size="small"
+                            onClick={() => handleMentionClick(message)}
+                            title="Mencionar usuários nesta mensagem"
+                            sx={{ ml: 1 }}
+                          >
+                            <AlternateEmail fontSize="small" />
+                          </IconButton>
+                        )}
                       </Box>
                     </Box>
                   </ListItem>
@@ -840,6 +988,96 @@ const AttendanceChat = ({ conversation, onBack }) => {
           </Button>
           <Button onClick={handleSendMessage} variant="contained">
             Enviar
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Dialog para menção de usuários */}
+      <Dialog 
+        open={showMentionDialog} 
+        onClose={() => setShowMentionDialog(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box display="flex" alignItems="center" gap={1}>
+            <AlternateEmail color="primary" />
+            <Typography>Mencionar usuários</Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Box mb={2}>
+            <Typography variant="body2" color="text.secondary" gutterBottom>
+              Mensagem selecionada:
+            </Typography>
+            <Paper sx={{ p: 1, backgroundColor: 'grey.50' }}>
+              <Typography variant="body2">
+                {selectedMessage?.content}
+              </Typography>
+            </Paper>
+          </Box>
+          
+          <Autocomplete
+            multiple
+            options={users}
+            getOptionLabel={(option) => `${option.full_name} (@${option.username})`}
+            value={selectedUsers}
+            onChange={(event, newValue) => setSelectedUsers(newValue)}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="Selecionar usuários"
+                placeholder="Digite para buscar usuários..."
+                fullWidth
+              />
+            )}
+            renderOption={(props, option) => (
+              <ListItem {...props}>
+                <ListItemAvatar>
+                  <Avatar>
+                    <Person />
+                  </Avatar>
+                </ListItemAvatar>
+                <ListItemText
+                  primary={option.full_name}
+                  secondary={`@${option.username}`}
+                />
+              </ListItem>
+            )}
+            renderTags={(value, getTagProps) =>
+              value.map((option, index) => (
+                <Chip
+                  {...getTagProps({ index })}
+                  key={option.id}
+                  label={`@${option.username}`}
+                  avatar={<Avatar><Person /></Avatar>}
+                />
+              ))
+            }
+          />
+          
+          <TextField
+            fullWidth
+            multiline
+            rows={3}
+            label="Comentário adicional (opcional)"
+            value={mentionText}
+            onChange={(e) => setMentionText(e.target.value)}
+            sx={{ mt: 2 }}
+            placeholder="Adicione um comentário sobre esta menção..."
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setShowMentionDialog(false)}>
+            Cancelar
+          </Button>
+          <Button 
+            onClick={handleSendMention}
+            variant="contained"
+            disabled={selectedUsers.length === 0}
+            startIcon={<Notifications />}
+          >
+            Enviar Menção ({selectedUsers.length})
           </Button>
         </DialogActions>
       </Dialog>

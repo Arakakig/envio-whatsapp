@@ -54,7 +54,12 @@ import {
   updateCustomerNote,
   deleteCustomerNote,
   sendInternalMessage,
-  getInternalMessages
+  getInternalMessages,
+  createMessageMention,
+  getMessageMentions,
+  getUnreadMentions,
+  markMentionAsRead,
+  getConversationMentions
 } from './database.js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
@@ -1175,19 +1180,19 @@ app.get('/api/attendance/dashboard', async (req, res) => {
             if (shouldUpdateContactInfo) {
               try {
                 console.log(`[DASHBOARD] Atualizando informações do contato ${conv.customer_phone}...`);
-                // Usar timeout para evitar travamentos
-                const contactInfo = await Promise.race([
-                  getContactInfo(currentClient, conv.customer_phone),
-                  new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
-                ]);
+              // Usar timeout para evitar travamentos
+              const contactInfo = await Promise.race([
+                getContactInfo(currentClient, conv.customer_phone),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
+              ]);
                 
                 // Atualizar no banco de dados
                 await updateContactInfoInDatabase(conv.customer_phone, contactInfo);
-                
-                profilePicture = contactInfo.profilePicture;
-                contactName = contactInfo.contactName || contactName;
-              } catch (picError) {
-                console.log(`[DASHBOARD] Erro ao buscar foto para ${conv.customer_phone}:`, picError.message);
+              
+              profilePicture = contactInfo.profilePicture;
+              contactName = contactInfo.contactName || contactName;
+            } catch (picError) {
+              console.log(`[DASHBOARD] Erro ao buscar foto para ${conv.customer_phone}:`, picError.message);
                 // Manter dados locais se disponíveis
                 profilePicture = conv.profile_picture || null;
                 contactName = conv.contact_name || conv.customer_name || null;
@@ -1776,6 +1781,140 @@ app.post('/api/attendance/new-conversation', async (req, res) => {
     console.error('[NEW-CONVERSATION] Erro:', error);
     res.status(500).json({ 
       error: 'Erro ao criar nova conversa: ' + error.message 
+    });
+  }
+});
+
+// ==================== ENDPOINTS PARA MENCIONES ====================
+
+// Criar menção em uma mensagem
+app.post('/api/attendance/mention', authenticateToken, async (req, res) => {
+  try {
+    const { messageId, conversationId, userIds, mentionText } = req.body;
+    const currentUser = req.user;
+
+    if (!messageId || !conversationId || !userIds || userIds.length === 0) {
+      return res.status(400).json({ error: 'Dados obrigatórios não fornecidos' });
+    }
+
+    // Verificar se a mensagem existe
+    const message = await getConversationMessages(conversationId, 1000);
+    const targetMessage = message.find(m => m.id === parseInt(messageId));
+    
+    if (!targetMessage) {
+      return res.status(404).json({ error: 'Mensagem não encontrada' });
+    }
+
+    // Criar menções para cada usuário
+    const mentions = [];
+    for (const userId of userIds) {
+      try {
+        const mention = await createMessageMention(
+          parseInt(messageId),
+          parseInt(conversationId),
+          parseInt(userId),
+          currentUser.id,
+          mentionText
+        );
+        
+        // Buscar informações do usuário mencionado
+        const mentionedUser = await getUserById(parseInt(userId));
+        mentions.push({
+          id: mention.id,
+          userId: parseInt(userId),
+          userName: mentionedUser.full_name || mentionedUser.username,
+          mentionText: mentionText,
+          created_at: new Date().toISOString()
+        });
+
+        // Emitir notificação para o usuário mencionado
+        io.emit('new-mention', {
+          mentionId: mention.id,
+          messageId: parseInt(messageId),
+          conversationId: parseInt(conversationId),
+          mentionedUserId: parseInt(userId),
+          mentionedBy: currentUser.full_name || currentUser.username,
+          mentionText: mentionText,
+          messageContent: targetMessage.content,
+          timestamp: new Date().toISOString()
+        });
+
+      } catch (error) {
+        console.error('Erro ao criar menção para usuário:', userId, error);
+      }
+    }
+
+    console.log(`[MENTION] ${mentions.length} menções criadas na mensagem ${messageId}`);
+
+    res.json({
+      success: true,
+      message: `${mentions.length} usuário(s) mencionado(s) com sucesso`,
+      mentions: mentions
+    });
+
+  } catch (error) {
+    console.error('[MENTION] Erro:', error);
+    res.status(500).json({ 
+      error: 'Erro ao criar menção: ' + error.message 
+    });
+  }
+});
+
+// Buscar menções não lidas do usuário atual
+app.get('/api/attendance/mentions/unread', authenticateToken, async (req, res) => {
+  try {
+    const currentUser = req.user;
+    const mentions = await getUnreadMentions(currentUser.id);
+
+    res.json({
+      success: true,
+      mentions: mentions
+    });
+
+  } catch (error) {
+    console.error('[MENTIONS] Erro ao buscar menções:', error);
+    res.status(500).json({ 
+      error: 'Erro ao buscar menções: ' + error.message 
+    });
+  }
+});
+
+// Marcar menção como lida
+app.post('/api/attendance/mentions/:mentionId/read', authenticateToken, async (req, res) => {
+  try {
+    const { mentionId } = req.params;
+    const currentUser = req.user;
+
+    await markMentionAsRead(parseInt(mentionId));
+
+    res.json({
+      success: true,
+      message: 'Menção marcada como lida'
+    });
+
+  } catch (error) {
+    console.error('[MENTIONS] Erro ao marcar menção como lida:', error);
+    res.status(500).json({ 
+      error: 'Erro ao marcar menção como lida: ' + error.message 
+    });
+  }
+});
+
+// Buscar menções de uma conversa
+app.get('/api/attendance/conversations/:conversationId/mentions', authenticateToken, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const mentions = await getConversationMentions(parseInt(conversationId));
+
+    res.json({
+      success: true,
+      mentions: mentions
+    });
+
+  } catch (error) {
+    console.error('[MENTIONS] Erro ao buscar menções da conversa:', error);
+    res.status(500).json({ 
+      error: 'Erro ao buscar menções: ' + error.message 
     });
   }
 });

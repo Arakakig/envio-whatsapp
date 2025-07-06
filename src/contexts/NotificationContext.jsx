@@ -1,5 +1,28 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { io } from 'socket.io-client';
+import { 
+  Box, 
+  Dialog, 
+  DialogTitle, 
+  DialogContent, 
+  List, 
+  ListItem, 
+  ListItemText, 
+  ListItemAvatar, 
+  Avatar, 
+  Typography, 
+  IconButton, 
+  Chip,
+  Button
+} from '@mui/material';
+import { 
+  Notifications, 
+  AlternateEmail, 
+  Message, 
+  Close, 
+  History,
+  Person
+} from '@mui/icons-material';
 
 const NotificationContext = createContext();
 
@@ -44,10 +67,51 @@ const playNotificationBeep = () => {
   }
 };
 
+// Função para tocar som específico para menções
+const playMentionSound = () => {
+  try {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    
+    // Criar dois osciladores para um som mais distintivo
+    const oscillator1 = audioContext.createOscillator();
+    const oscillator2 = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    // Configurar os sons
+    oscillator1.type = 'sine';
+    oscillator1.frequency.setValueAtTime(1000, audioContext.currentTime);
+    oscillator2.type = 'sine';
+    oscillator2.frequency.setValueAtTime(1200, audioContext.currentTime);
+    
+    oscillator1.connect(gainNode);
+    oscillator2.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    // Configurar volume e envelope
+    gainNode.gain.setValueAtTime(0, audioContext.currentTime);
+    gainNode.gain.linearRampToValueAtTime(0.4, audioContext.currentTime + 0.01);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.4);
+    
+    // Tocar o som
+    oscillator1.start(audioContext.currentTime);
+    oscillator2.start(audioContext.currentTime);
+    oscillator1.stop(audioContext.currentTime + 0.4);
+    oscillator2.stop(audioContext.currentTime + 0.4);
+    
+    console.log('[NOTIFICATIONS] Som de menção tocado com sucesso');
+    return true;
+  } catch (error) {
+    console.log('[NOTIFICATIONS] Erro ao tocar som de menção:', error);
+    return false;
+  }
+};
+
 export const NotificationProvider = ({ children, conversationContext }) => {
   const [currentUser, setCurrentUser] = useState(null);
   const [unreadCounts, setUnreadCounts] = useState({});
   const [toasts, setToasts] = useState([]);
+  const [notificationHistory, setNotificationHistory] = useState([]);
+  const [showHistoryDialog, setShowHistoryDialog] = useState(false);
   const socketRef = useRef(null);
   const originalTitleRef = useRef(null);
   const titleTimeoutRef = useRef(null);
@@ -150,7 +214,82 @@ export const NotificationProvider = ({ children, conversationContext }) => {
           title: 'Nova Mensagem Interna',
           message: `${messageData.sender_name}: ${messageData.message}`,
           sender: messageData.sender_name,
-          duration: 5000
+          duration: 0, // Não fecha sozinho
+          persistent: true
+        });
+      }
+    });
+
+    // Escutar menções
+    socketRef.current.on('new-mention', (mentionData) => {
+      console.log('[NOTIFICATIONS] Nova menção recebida:', mentionData);
+      
+      // Verificar se a menção é para o usuário atual
+      if (mentionData.mentionedUserId == currentUser.id) {
+        console.log('[NOTIFICATIONS] Processando notificação de menção para usuário:', currentUser.id);
+        
+        // Notificar no título da página
+        if (!originalTitleRef.current) {
+          originalTitleRef.current = document.title;
+        }
+        
+        // Limpar timeout anterior se existir
+        if (titleTimeoutRef.current) {
+          clearTimeout(titleTimeoutRef.current);
+        }
+        
+        const notificationTitle = `@${currentUser.username} foi mencionado`;
+        document.title = notificationTitle;
+        
+        // Restaurar título original após 3 segundos
+        titleTimeoutRef.current = setTimeout(() => {
+          document.title = originalTitleRef.current;
+        }, 3000);
+        
+        console.log('[NOTIFICATIONS] Título da página atualizado:', notificationTitle);
+        
+        // Mostrar notificação do navegador
+        if ('Notification' in window && Notification.permission === 'granted') {
+          console.log('[NOTIFICATIONS] Enviando notificação do navegador para menção');
+          new Notification('Você foi mencionado!', {
+            body: `${mentionData.mentionedBy} mencionou você em uma mensagem: "${mentionData.messageContent}"`,
+            icon: 'http://localhost:3001/vite.svg',
+            badge: 'http://localhost:3001/vite.svg',
+            tag: 'mention',
+            requireInteraction: false,
+            silent: false
+          });
+        }
+
+        // Tocar som específico para menções
+        playMentionSound();
+
+        // Atualizar contador de menções não lidas
+        setUnreadCounts(prev => {
+          const newCounts = {
+            ...prev,
+            mentions: (prev.mentions || 0) + 1
+          };
+          console.log('[NOTIFICATIONS] Contador de menções não lidas atualizado:', {
+            previous_count: prev.mentions || 0,
+            new_count: newCounts.mentions,
+            all_counts: newCounts
+          });
+          return newCounts;
+        });
+
+        // Adicionar toast
+        addToast({
+          id: Date.now(),
+          type: 'mention',
+          title: 'Você foi mencionado!',
+          message: `${mentionData.mentionedBy} mencionou você em uma mensagem`,
+          mentionText: mentionData.mentionText,
+          conversationId: mentionData.conversationId,
+          messageId: mentionData.messageId,
+          duration: 0, // Não fecha sozinho
+          persistent: true,
+          clickable: true
         });
       }
     });
@@ -234,7 +373,10 @@ export const NotificationProvider = ({ children, conversationContext }) => {
             title: 'Nova Mensagem de Cliente',
             message: `${customerName}: ${data.message}`,
             sender: customerName,
-            duration: 5000
+            conversationId: data.conversationId,
+            duration: 0, // Não fecha sozinho
+            persistent: true,
+            clickable: true
           });
         } else {
           console.log('[NOTIFICATIONS] Conversa está aberta, não mostrando notificação');
@@ -263,12 +405,22 @@ export const NotificationProvider = ({ children, conversationContext }) => {
 
   // Função para adicionar toast
   const addToast = useCallback((toast) => {
-    setToasts(prev => [...prev, toast]);
+    const newToast = {
+      ...toast,
+      timestamp: new Date()
+    };
     
-    // Remover toast automaticamente após a duração
-    setTimeout(() => {
-      removeToast(toast.id);
-    }, toast.duration);
+    setToasts(prev => [...prev, newToast]);
+    
+    // Adicionar ao histórico
+    setNotificationHistory(prev => [newToast, ...prev.slice(0, 49)]); // Manter apenas as últimas 50
+    
+    // Remover toast automaticamente apenas se não for persistente
+    if (!toast.persistent && toast.duration > 0) {
+      setTimeout(() => {
+        removeToast(toast.id);
+      }, toast.duration);
+    }
   }, []);
 
   // Função para remover toast
@@ -284,32 +436,73 @@ export const NotificationProvider = ({ children, conversationContext }) => {
     }));
   }, []);
 
+  // Função para limpar contador de menções
+  const clearMentionsCount = useCallback(() => {
+    setUnreadCounts(prev => ({
+      ...prev,
+      mentions: 0
+    }));
+  }, []);
+
   // Função para obter contador total de mensagens não lidas
   const getTotalUnreadCount = useCallback(() => {
     return Object.values(unreadCounts).reduce((total, count) => total + count, 0);
   }, [unreadCounts]);
 
+  // Função para navegar para conversa
+  const navigateToConversation = useCallback((conversationId, messageId = null) => {
+    console.log('[NOTIFICATIONS] Navegando para conversa:', { conversationId, messageId });
+    
+    // Disparar evento para mudar para a view de atendimento
+    const navigationEvent = new CustomEvent('navigateToAttendance', {
+      detail: { conversationId, messageId }
+    });
+    window.dispatchEvent(navigationEvent);
+  }, []);
+
+  // Função para lidar com clique no toast
+  const handleToastClick = useCallback((toast) => {
+    if (toast.clickable && toast.conversationId) {
+      console.log('[NOTIFICATIONS] Toast clicado:', toast);
+      
+      // Sempre usar a navegação unificada
+      navigateToConversation(toast.conversationId, toast.messageId);
+      removeToast(toast.id);
+    }
+  }, [navigateToConversation, removeToast]);
+
   const value = useMemo(() => ({
     currentUser,
     unreadCounts,
     toasts,
+    notificationHistory,
     addToast,
     removeToast,
     clearUnreadCount,
+    clearMentionsCount,
     getTotalUnreadCount,
+    navigateToConversation,
+    showHistoryDialog,
+    setShowHistoryDialog,
     socket: socketRef.current
-  }), [currentUser, unreadCounts, toasts, addToast, removeToast, clearUnreadCount, getTotalUnreadCount]);
+  }), [currentUser, unreadCounts, toasts, notificationHistory, addToast, removeToast, clearUnreadCount, clearMentionsCount, getTotalUnreadCount, navigateToConversation, showHistoryDialog]);
 
   return (
     <NotificationContext.Provider value={value}>
       {children}
-      <ToastContainer toasts={toasts} removeToast={removeToast} />
+      <ToastContainer toasts={toasts} removeToast={removeToast} onToastClick={handleToastClick} />
+      <NotificationHistoryDialog 
+        open={showHistoryDialog} 
+        onClose={() => setShowHistoryDialog(false)}
+        notifications={notificationHistory}
+        onNotificationClick={handleToastClick}
+      />
     </NotificationContext.Provider>
   );
 };
 
 // Componente Toast
-const ToastContainer = ({ toasts, removeToast }) => {
+const ToastContainer = ({ toasts, removeToast, onToastClick }) => {
   return (
     <div style={{
       position: 'fixed',
@@ -321,13 +514,13 @@ const ToastContainer = ({ toasts, removeToast }) => {
       gap: '10px'
     }}>
       {toasts.map(toast => (
-        <Toast key={toast.id} toast={toast} removeToast={removeToast} />
+        <Toast key={toast.id} toast={toast} removeToast={removeToast} onClick={onToastClick} />
       ))}
     </div>
   );
 };
 
-const Toast = ({ toast, removeToast }) => {
+const Toast = ({ toast, removeToast, onClick }) => {
   const getToastStyle = () => {
     const baseStyle = {
       minWidth: '300px',
@@ -338,8 +531,9 @@ const Toast = ({ toast, removeToast }) => {
       alignItems: 'flex-start',
       gap: '12px',
       animation: 'slideIn 0.3s ease-out',
-      cursor: 'pointer',
-      fontFamily: 'Arial, sans-serif'
+      cursor: toast.clickable ? 'pointer' : 'default',
+      fontFamily: 'Arial, sans-serif',
+      transition: 'all 0.2s ease'
     };
 
     switch (toast.type) {
@@ -349,6 +543,13 @@ const Toast = ({ toast, removeToast }) => {
           backgroundColor: '#e3f2fd',
           border: '1px solid #2196f3',
           color: '#1565c0'
+        };
+      case 'mention':
+        return {
+          ...baseStyle,
+          backgroundColor: '#fff3e0',
+          border: '1px solid #ff9800',
+          color: '#e65100'
         };
       case 'success':
         return {
@@ -374,19 +575,54 @@ const Toast = ({ toast, removeToast }) => {
     }
   };
 
+  const handleClick = () => {
+    if (toast.clickable && onClick) {
+      onClick(toast);
+    } else {
+      removeToast(toast.id);
+    }
+  };
+
   return (
     <div
       style={getToastStyle()}
-      onClick={() => removeToast(toast.id)}
-      title="Clique para fechar"
+      onClick={handleClick}
+      title={toast.clickable ? "Clique para abrir a conversa" : "Clique para fechar"}
+      onMouseEnter={(e) => {
+        if (toast.clickable) {
+          e.target.style.transform = 'scale(1.02)';
+          e.target.style.boxShadow = '0 6px 16px rgba(0,0,0,0.2)';
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (toast.clickable) {
+          e.target.style.transform = 'scale(1)';
+          e.target.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+        }
+      }}
     >
       <div style={{ flex: 1 }}>
         <div style={{ 
           fontWeight: 'bold', 
           marginBottom: '4px',
-          fontSize: '14px'
+          fontSize: '14px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px'
         }}>
+          {toast.type === 'mention' && (
+            <span style={{ fontSize: '16px' }}>@</span>
+          )}
           {toast.title}
+          {toast.clickable && (
+            <Chip 
+              label="Clique para abrir" 
+              size="small" 
+              color="primary" 
+              variant="outlined"
+              style={{ marginLeft: '8px', fontSize: '10px' }}
+            />
+          )}
         </div>
         <div style={{ 
           fontSize: '13px',
@@ -403,6 +639,23 @@ const Toast = ({ toast, removeToast }) => {
             De: {toast.sender}
           </div>
         )}
+        {toast.mentionText && (
+          <div style={{ 
+            fontSize: '11px',
+            marginTop: '4px',
+            opacity: 0.8,
+            fontStyle: 'italic'
+          }}>
+            "{toast.mentionText}"
+          </div>
+        )}
+        <div style={{ 
+          fontSize: '10px',
+          marginTop: '4px',
+          opacity: 0.6
+        }}>
+          {toast.timestamp?.toLocaleTimeString()}
+        </div>
       </div>
       <button
         onClick={(e) => {
@@ -439,5 +692,102 @@ const Toast = ({ toast, removeToast }) => {
         }
       `}</style>
     </div>
+  );
+};
+
+// Componente de histórico de notificações
+const NotificationHistoryDialog = ({ open, onClose, notifications, onNotificationClick }) => {
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+      <DialogTitle>
+        <Box display="flex" alignItems="center" justifyContent="space-between">
+          <Box display="flex" alignItems="center" gap={1}>
+            <History />
+            <Typography variant="h6">Histórico de Notificações</Typography>
+          </Box>
+          <IconButton onClick={onClose}>
+            <Close />
+          </IconButton>
+        </Box>
+      </DialogTitle>
+      <DialogContent>
+        {notifications.length === 0 ? (
+          <Box textAlign="center" py={4}>
+            <Typography color="text.secondary">
+              Nenhuma notificação no histórico
+            </Typography>
+          </Box>
+        ) : (
+          <List>
+            {notifications.map((notification) => (
+              <ListItem 
+                key={notification.id}
+                button={notification.clickable}
+                onClick={() => {
+                  if (notification.clickable && onNotificationClick) {
+                    onNotificationClick(notification);
+                    onClose();
+                  }
+                }}
+                sx={{
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  borderRadius: 1,
+                  mb: 1,
+                  '&:hover': {
+                    backgroundColor: notification.clickable ? 'action.hover' : 'transparent'
+                  }
+                }}
+              >
+                <ListItemAvatar>
+                  <Avatar sx={{ 
+                    bgcolor: notification.type === 'mention' ? 'warning.main' : 'primary.main' 
+                  }}>
+                    {notification.type === 'mention' ? <AlternateEmail /> : <Message />}
+                  </Avatar>
+                </ListItemAvatar>
+                <ListItemText
+                  primary={
+                    <Box display="flex" alignItems="center" gap={1}>
+                      <Typography variant="subtitle2">
+                        {notification.title}
+                      </Typography>
+                      {notification.clickable && (
+                        <Chip 
+                          label="Clique para abrir" 
+                          size="small" 
+                          color="primary" 
+                          variant="outlined"
+                        />
+                      )}
+                    </Box>
+                  }
+                  secondary={
+                    <Box>
+                      <Typography variant="body2" color="text.secondary">
+                        {notification.message}
+                      </Typography>
+                      {notification.sender && (
+                        <Typography variant="caption" color="text.secondary">
+                          De: {notification.sender}
+                        </Typography>
+                      )}
+                      {notification.mentionText && (
+                        <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+                          "{notification.mentionText}"
+                        </Typography>
+                      )}
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        {notification.timestamp?.toLocaleString()}
+                      </Typography>
+                    </Box>
+                  }
+                />
+              </ListItem>
+            ))}
+          </List>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }; 

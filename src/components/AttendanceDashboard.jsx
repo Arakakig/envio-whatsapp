@@ -481,6 +481,42 @@ const AttendanceDashboard = ({ onSelectConversation, selectedConversation }) => 
     fetchSectors();
   }, [isInitialized]);
 
+  // Escutar evento de abertura de conversa
+  useEffect(() => {
+    const handleOpenConversation = (event) => {
+      const { conversationId, messageId } = event.detail;
+      console.log('[DASHBOARD] Evento de abertura de conversa recebido:', { conversationId, messageId });
+      
+      // Encontrar a conversa
+      const conversation = conversations.find(c => c.id === conversationId);
+      if (conversation) {
+        console.log('[DASHBOARD] Abrindo conversa:', conversation);
+        onSelectConversation(conversation);
+        
+        // Se houver messageId, podemos implementar scroll para a mensagem específica
+        if (messageId) {
+          console.log('[DASHBOARD] Mensagem específica solicitada:', messageId);
+          // TODO: Implementar scroll para mensagem específica
+        }
+      } else {
+        console.log('[DASHBOARD] Conversa não encontrada:', conversationId);
+        // Recarregar conversas e tentar novamente
+        fetchConversations(true).then(() => {
+          const updatedConversation = conversations.find(c => c.id === conversationId);
+          if (updatedConversation) {
+            onSelectConversation(updatedConversation);
+          }
+        });
+      }
+    };
+
+    window.addEventListener('openConversation', handleOpenConversation);
+    
+    return () => {
+      window.removeEventListener('openConversation', handleOpenConversation);
+    };
+  }, [conversations, onSelectConversation, fetchConversations]);
+
   const getStatusColor = (status) => {
     switch (status) {
       case 'open':

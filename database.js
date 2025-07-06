@@ -118,6 +118,21 @@ export const initDatabase = async () => {
         FOREIGN KEY (receiver_id) REFERENCES users(id)
       );
 
+      CREATE TABLE IF NOT EXISTS message_mentions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER NOT NULL,
+        conversation_id INTEGER NOT NULL,
+        mentioned_user_id INTEGER NOT NULL,
+        mentioned_by_user_id INTEGER NOT NULL,
+        mention_text TEXT,
+        is_read BOOLEAN DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (message_id) REFERENCES messages(id),
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id),
+        FOREIGN KEY (mentioned_user_id) REFERENCES users(id),
+        FOREIGN KEY (mentioned_by_user_id) REFERENCES users(id)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
       CREATE INDEX IF NOT EXISTS idx_conversations_customer ON conversations(customer_id);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
@@ -128,6 +143,9 @@ export const initDatabase = async () => {
       CREATE INDEX IF NOT EXISTS idx_customer_notes_customer ON customer_notes(customer_id);
       CREATE INDEX IF NOT EXISTS idx_internal_messages_sender ON internal_messages(sender_id);
       CREATE INDEX IF NOT EXISTS idx_internal_messages_receiver ON internal_messages(receiver_id);
+      CREATE INDEX IF NOT EXISTS idx_message_mentions_message ON message_mentions(message_id);
+      CREATE INDEX IF NOT EXISTS idx_message_mentions_conversation ON message_mentions(conversation_id);
+      CREATE INDEX IF NOT EXISTS idx_message_mentions_user ON message_mentions(mentioned_user_id);
     `);
 
     console.log('Banco de dados inicializado com sucesso');
@@ -1131,6 +1149,107 @@ export const getSectorByName = async (name) => {
     return await db.get('SELECT * FROM sectors WHERE name = ?', [name]);
   } catch (error) {
     console.error('Erro ao buscar setor por nome:', error);
+    throw error;
+  }
+};
+
+// ==================== FUNÇÕES PARA MENCIONES ====================
+
+// Criar menção em uma mensagem
+export const createMessageMention = async (messageId, conversationId, mentionedUserId, mentionedByUserId, mentionText = null) => {
+  try {
+    const result = await db.run(
+      'INSERT INTO message_mentions (message_id, conversation_id, mentioned_user_id, mentioned_by_user_id, mention_text) VALUES (?, ?, ?, ?, ?)',
+      [messageId, conversationId, mentionedUserId, mentionedByUserId, mentionText]
+    );
+    return { id: result.lastID };
+  } catch (error) {
+    console.error('Erro ao criar menção:', error);
+    throw error;
+  }
+};
+
+// Buscar menções de uma mensagem
+export const getMessageMentions = async (messageId) => {
+  try {
+    return await db.all(`
+      SELECT 
+        mm.*,
+        u.full_name as mentioned_user_name,
+        u.username as mentioned_user_username,
+        m.content as message_content,
+        c.chat_id as conversation_chat_id
+      FROM message_mentions mm
+      JOIN users u ON mm.mentioned_user_id = u.id
+      JOIN messages m ON mm.message_id = m.id
+      JOIN conversations c ON mm.conversation_id = c.id
+      WHERE mm.message_id = ?
+      ORDER BY mm.created_at ASC
+    `, [messageId]);
+  } catch (error) {
+    console.error('Erro ao buscar menções da mensagem:', error);
+    throw error;
+  }
+};
+
+// Buscar menções não lidas de um usuário
+export const getUnreadMentions = async (userId) => {
+  try {
+    return await db.all(`
+      SELECT 
+        mm.*,
+        u.full_name as mentioned_by_user_name,
+        u.username as mentioned_by_user_username,
+        m.content as message_content,
+        c.chat_id as conversation_chat_id,
+        cust.name as customer_name,
+        cust.phone as customer_phone
+      FROM message_mentions mm
+      JOIN users u ON mm.mentioned_by_user_id = u.id
+      JOIN messages m ON mm.message_id = m.id
+      JOIN conversations c ON mm.conversation_id = c.id
+      JOIN customers cust ON c.customer_id = cust.id
+      WHERE mm.mentioned_user_id = ? AND mm.is_read = 0
+      ORDER BY mm.created_at DESC
+    `, [userId]);
+  } catch (error) {
+    console.error('Erro ao buscar menções não lidas:', error);
+    throw error;
+  }
+};
+
+// Marcar menção como lida
+export const markMentionAsRead = async (mentionId) => {
+  try {
+    await db.run(
+      'UPDATE message_mentions SET is_read = 1 WHERE id = ?',
+      [mentionId]
+    );
+    return true;
+  } catch (error) {
+    console.error('Erro ao marcar menção como lida:', error);
+    throw error;
+  }
+};
+
+// Buscar todas as menções de uma conversa
+export const getConversationMentions = async (conversationId) => {
+  try {
+    return await db.all(`
+      SELECT 
+        mm.*,
+        u.full_name as mentioned_user_name,
+        u.username as mentioned_user_username,
+        m.content as message_content,
+        m.timestamp as message_timestamp
+      FROM message_mentions mm
+      JOIN users u ON mm.mentioned_user_id = u.id
+      JOIN messages m ON mm.message_id = m.id
+      WHERE mm.conversation_id = ?
+      ORDER BY mm.created_at DESC
+    `, [conversationId]);
+  } catch (error) {
+    console.error('Erro ao buscar menções da conversa:', error);
     throw error;
   }
 };
